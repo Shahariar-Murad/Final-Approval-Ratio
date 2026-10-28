@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react'
-import * as XLSX from 'xlsx'
+import * as XLSX from 'xlsx-js-style'
 import { REASON_MAP } from './reasonMap'
+import { COUNTRY_NAMES, COUNTRY_CODES } from './countryMeta'
 
 const PSP_ORDER = [
   'Nuvei (Safecharge)','Nuvei-AE','Nuvei-EU','Network International','Axcess','Axcess-Truevo','Axcess-Paystrax',
@@ -58,6 +59,44 @@ const asNumber = v => {
   return Number.isFinite(n) ? n : 0
 }
 
+const TIMEZONE_OPTIONS = [
+  {label:'GMT+0', offset:0},
+  {label:'GMT+3', offset:3},
+  {label:'GMT+6', offset:6},
+  {label:'GMT+1', offset:1},
+  {label:'GMT+2', offset:2},
+  {label:'GMT+4', offset:4},
+  {label:'GMT+5', offset:5},
+  {label:'GMT+7', offset:7},
+  {label:'GMT+8', offset:8},
+  {label:'GMT+9', offset:9},
+  {label:'GMT+10', offset:10},
+  {label:'GMT-1', offset:-1},
+  {label:'GMT-3', offset:-3},
+  {label:'GMT-5', offset:-5},
+  {label:'GMT-6', offset:-6},
+  {label:'GMT-8', offset:-8}
+]
+const timezoneOffset = label => TIMEZONE_OPTIONS.find(x=>x.label===label)?.offset ?? 0
+const countryCodeFromValue = value => {
+  const raw=safe(value)
+  if(!raw) return ''
+  const upper=raw.toUpperCase()
+  if(COUNTRY_NAMES[upper]) return upper
+  return COUNTRY_CODES[raw.toLowerCase()] || ''
+}
+const countryName = value => {
+  const code=countryCodeFromValue(value)
+  return code ? COUNTRY_NAMES[code] : (safe(value) || 'Unknown')
+}
+const isIndiaCountry = value => countryCodeFromValue(value)==='IN' || normalize(value)==='india'
+const dateKeyInTimezone = (value, timezone='GMT+0') => {
+  const d=parseSourceDate(value)
+  if(!d) return ''
+  const shifted=new Date(d.getTime()+timezoneOffset(timezone)*60*60*1000)
+  return shifted.toISOString().slice(0,10)
+}
+
 function reasonInfo(raw){
   const s=safe(raw)
   if(!s) return null
@@ -69,8 +108,8 @@ function reasonInfo(raw){
 function mapSpecificPsp(psp,country,midAlias){
   const p=safe(psp), c=safe(country).toUpperCase(), mid=safe(midAlias)
   if(p==='CardPay') return 'Unlimit'
-  if(p==='Innatech') return c==='IN' ? 'Payabl-India' : 'Payabl-Global'
-  if(p==='PayPal') return c==='IN' ? 'Paypal-India' : 'PayPal-Global'
+  if(p==='Innatech') return isIndiaCountry(country) ? 'Payabl-India' : 'Payabl-Global'
+  if(p==='PayPal') return isIndiaCountry(country) ? 'Paypal-India' : 'PayPal-Global'
   if(p==='SafeCharge'){
     if(mid.includes('MID-AE')) return 'Nuvei-AE'
     if(mid.includes('MID-EU')) return 'Nuvei-EU'
@@ -115,11 +154,7 @@ function parseSourceDate(value){
   const d=new Date(s)
   return Number.isNaN(d.getTime())?null:d
 }
-function gmt3DateKey(value){
-  const d=parseSourceDate(value)
-  if(!d) return ''
-  return new Date(d.getTime()+3*60*60*1000).toISOString().slice(0,10)
-}
+function gmt3DateKey(value){ return dateKeyInTimezone(value,'GMT+3') }
 function matchesMulti(value, selected, mode){
   if(!selected?.length) return true
   const hit=selected.includes(value)
@@ -128,19 +163,20 @@ function matchesMulti(value, selected, mode){
 function applyRawFilters(rows, filters){
   if(!filters) return rows
   return rows.filter(x=>{
-    const dateKey=gmt3DateKey(x.processingDate)
+    const dateKey=dateKeyInTimezone(x.processingDate,filters.timezone||'GMT+0')
     if(filters.startDate && (!dateKey || dateKey < filters.startDate)) return false
     if(filters.endDate && (!dateKey || dateKey > filters.endDate)) return false
     if(!matchesMulti(safe(x.pspName),filters.pspSelected,filters.pspMode)) return false
     if(!matchesMulti(safe(x.midAlias)||'Unknown',filters.midSelected,filters.midMode)) return false
-    if(!matchesMulti(safe(x.country)||'Unknown',filters.countrySelected,filters.countryMode)) return false
+    if(!matchesMulti(countryName(x.country),filters.countrySelected,filters.countryMode)) return false
     return true
   })
 }
 
 function buildFromRaw(rows,fileName='Transaction Data',filterConfig=null){
+  const timezone=filterConfig?.timezone || 'GMT+0'
   const parsed=rawRowsToObjects(rows)
-  const r=applyRawFilters(parsed,filterConfig)
+  const r=applyRawFilters(parsed,{...(filterConfig||{}),timezone})
   const approvedRows=r.filter(x=>x.status==='approved')
   const declinedRows=r.filter(x=>x.status==='declined')
   const otherRows=r.filter(x=>!['approved','declined'].includes(x.status))
@@ -171,15 +207,15 @@ function buildFromRaw(rows,fileName='Transaction Data',filterConfig=null){
   const periodDates=r.map(x=>new Date(x.processingDate)).filter(d=>!Number.isNaN(d.getTime()))
   let period='Uploaded transaction period'
   if(periodDates.length){
-    const shifted=periodDates.map(d=>new Date(d.getTime()+3*60*60*1000)).sort((a,b)=>a-b)
+    const shifted=periodDates.map(d=>new Date(d.getTime()+timezoneOffset(timezone)*60*60*1000)).sort((a,b)=>a-b)
     const f=shifted[0], l=shifted[shifted.length-1]
     const fmt=d=>d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric',timeZone:'UTC'})
-    period=`${fmt(f)} – ${fmt(l)} · GMT+3`
+    period=`${fmt(f)} – ${fmt(l)} · ${timezone}`
   }
 
   const makeKpi=(label,a,rev)=>({Metric:label,Count:total,Approved:approved.length,Declined:terminal.length,'Hard Declines':hard.length,'Soft Declines':soft.length,'Displayed Approval Ratio':a,'Approval Ratio without Hard Decline':arNoHard,'Hard Decline %':hardPct,'Soft Decline %':softPct,'Top Declined Reason':topReason,'Revenue (USD)':rev})
   const allRevenue=approved.reduce((s,o)=>s+o.revenue,0)
-  const withoutIndiaOrders=orders.filter(o=>safe(o.country).toUpperCase()!=='IN')
+  const withoutIndiaOrders=orders.filter(o=>!isIndiaCountry(o.country))
   const wiApproved=withoutIndiaOrders.filter(o=>o.approved), wiTerminal=withoutIndiaOrders.filter(o=>!o.approved)
   const wiHard=wiTerminal.filter(o=>o.firstDeclineInfo?.type==='Hard'), wiSoft=wiTerminal.filter(o=>o.firstDeclineInfo?.type==='Soft')
   const wiAr=withoutIndiaOrders.length?wiApproved.length/withoutIndiaOrders.length:0
@@ -196,9 +232,10 @@ function buildFromRaw(rows,fileName='Transaction Data',filterConfig=null){
 
   const countryMap=new Map()
   for(const x of r){
-    const c=x.country||'Unknown'; let g=countryMap.get(c); if(!g) g={country:c,count:0,approved:0,revenue:0,orders:[],attemptRows:[]}; countryMap.set(c,g); g.attemptRows.push(x)
+    const code=countryCodeFromValue(x.country), key=code||normalize(x.country)||'unknown';
+    let g=countryMap.get(key); if(!g) g={country:countryName(x.country),countryCode:code||'',count:0,approved:0,revenue:0,orders:[],attemptRows:[]}; countryMap.set(key,g); g.attemptRows.push(x)
   }
-  for(const o of orders){const c=o.country||'Unknown'; const g=countryMap.get(c)||{country:c,count:0,approved:0,revenue:0,orders:[],attemptRows:[]}; g.count++;if(o.approved)g.approved++;g.revenue+=o.revenue;g.orders.push(o);countryMap.set(c,g)}
+  for(const o of orders){const code=countryCodeFromValue(o.country), key=code||normalize(o.country)||'unknown'; const g=countryMap.get(key)||{country:countryName(o.country),countryCode:code||'',count:0,approved:0,revenue:0,orders:[],attemptRows:[]}; g.count++;if(o.approved)g.approved++;g.revenue+=o.revenue;g.orders.push(o);countryMap.set(key,g)}
 
   const countryRecords=[...countryMap.values()].map(g=>{
     const terminalOrders=g.orders.filter(o=>!o.approved)
@@ -211,7 +248,7 @@ function buildFromRaw(rows,fileName='Transaction Data',filterConfig=null){
     if(!candidates.length)candidates=[...pspGroups.values()]
     candidates=candidates.filter(q=>q.approved+q.declined>0).map(q=>({...q,approval:q.approved/(q.approved+q.declined)})).sort((a,b)=>b.approval-a.approval||b.attempts-a.attempts)
     const top=candidates[0]||{psp:'—',approval:null,attempts:0}
-    return {rank:0,country:g.country,code:g.country,amount:g.revenue,count:g.count,approval:g.count?g.approved/g.count:0,approvalWithoutHard:(g.approved+h+s)?g.approved/(g.approved+s):0,hardPct:(h+s)?h/(h+s):0,softPct:(h+s)?s/(h+s):0,topReason:tr,topPsp:top.psp,topPspApproval:top.approval,topPspCount:top.attempts}
+    return {rank:0,country:g.country,code:g.countryCode,amount:g.revenue,count:g.count,approval:g.count?g.approved/g.count:0,approvalWithoutHard:(g.approved+h+s)?g.approved/(g.approved+s):0,hardPct:(h+s)?h/(h+s):0,softPct:(h+s)?s/(h+s):0,topReason:tr,topPsp:top.psp,topPspApproval:top.approval,topPspCount:top.attempts}
   }).sort((a,b)=>b.amount-a.amount||b.count-a.count).map((x,i)=>({...x,rank:i+1}))
 
   const pspDefs=[]
@@ -232,14 +269,14 @@ function buildFromRaw(rows,fileName='Transaction Data',filterConfig=null){
   def.push(...['Network International','Axcess','Axcess-Truevo'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
   def.push(pspSubset('Axcess-Paystrax',sourceFilter('Paystra'),'Paystra'))
   def.push(pspSubset('Payabl',sourceFilter('Innatech'),'Innatech (all countries)'))
-  def.push(pspSubset('Payabl-Global',x=>x.pspName==='Innatech'&&safe(x.country).toUpperCase()!=='IN','Innatech → Payabl (non-India)'))
-  def.push(pspSubset('Payabl-India',x=>x.pspName==='Innatech'&&safe(x.country).toUpperCase()==='IN','Innatech → Payabl (India)'))
+  def.push(pspSubset('Payabl-Global',x=>x.pspName==='Innatech'&&!isIndiaCountry(x.country),'Innatech → Payabl (non-India)'))
+  def.push(pspSubset('Payabl-India',x=>x.pspName==='Innatech'&&isIndiaCountry(x.country),'Innatech → Payabl (India)'))
   def.push(pspSubset('Paysafe',sourceFilter('Paysafe'),'Paysafe'))
   def.push(pspSubset('Unlimit',sourceFilter('CardPay'),'CardPay → Unlimit'))
   def.push(...['Zen (Card)','PayMaxis'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
   def.push(pspSubset('PayPal',sourceFilter('PayPal'),'PayPal (all countries)'))
-  def.push(pspSubset('PayPal-Global',x=>x.pspName==='PayPal'&&safe(x.country).toUpperCase()!=='IN','PayPal (non-India)'))
-  def.push(pspSubset('Paypal-India',x=>x.pspName==='PayPal'&&safe(x.country).toUpperCase()==='IN','PayPal (India)'))
+  def.push(pspSubset('PayPal-Global',x=>x.pspName==='PayPal'&&!isIndiaCountry(x.country),'PayPal (non-India)'))
+  def.push(pspSubset('Paypal-India',x=>x.pspName==='PayPal'&&isIndiaCountry(x.country),'PayPal (India)'))
   def.push(pspSubset('Trust Payment',sourceFilter('TrustPayments'),'TrustPayments'))
   def.push(...['Apple Pay via Payabl','Google Pay via Payabl'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
 
@@ -247,8 +284,8 @@ function buildFromRaw(rows,fileName='Transaction Data',filterConfig=null){
   for(const x of r.filter(x=>x.status==='declined')){const inf=reasonInfo(x.declineReason);if(inf){const k=inf.reason+'||'+inf.type;taxonomy[k]=(taxonomy[k]||0)+1}}
   const taxonomyRows=Object.entries(taxonomy).map(([k,count])=>{const [reason,type]=k.split('||');return {reason,type,count}}).sort((a,b)=>b.count-a.count)
 
-  return {period,timezone:'GMT+3',fileName,rawRows:rows,rawObjects:parsed,filterable:true,kpis,pspWise:def,countries:countryRecords,mappingRules:PSP_RULES.map(x=>({source:x[0],dashboard:x[1],scope:x[2],rule:x[3]})),taxonomy:taxonomyRows,methodology:[
-    {metric:'Period',definition:period,note:'processing_date is converted from source UTC/GMT+0 to GMT+3.'},
+  return {period,timezone,fileName,rawRows:rows,rawObjects:parsed,filterable:true,kpis,pspWise:def,countries:countryRecords,mappingRules:PSP_RULES.map(x=>({source:x[0],dashboard:x[1],scope:x[2],rule:x[3]})),taxonomy:taxonomyRows,methodology:[
+    {metric:'Period',definition:period,note:'processing_date is interpreted as source GMT+0 and converted to the selected analysis timezone.'},
     {metric:'Unique transaction key',definition:'merchantOrderId',note:'Repeated PSP attempts are cascaded into one country-level outcome.'},
     {metric:'Cascaded outcome',definition:'Approved if any attempt is approved; otherwise Declined',note:'Approved wins on retry/cascade.'},
     {metric:'Approval Ratio',definition:'Approved unique orders / total unique orders',note:'Country/cascaded calculation.'},
@@ -263,12 +300,25 @@ function buildFromRaw(rows,fileName='Transaction Data',filterConfig=null){
 function parseAnalysisWorkbook(wb,fileName){
   const sheet=(name)=>wb.Sheets[name]
   if(!sheet('Executive Summary')) throw new Error('ANALYSIS_FILE')
-  const pspRows=XLSX.utils.sheet_to_json(sheet('PSP Wise'),{header:4,defval:null})
-  const countryRows=XLSX.utils.sheet_to_json(sheet('Top 50 Countries'),{header:4,defval:null})
-  const mapRows=XLSX.utils.sheet_to_json(sheet('Mapping Rules'),{header:3,defval:null})
-  const kRows=XLSX.utils.sheet_to_json(sheet('Executive Summary'),{header:8,defval:null})
-  const methodRows=XLSX.utils.sheet_to_json(sheet('Methodology'),{header:4,defval:null})
-  return {period:'Uploaded analysis workbook',timezone:'GMT+3',fileName,filterable:false,kpis:kRows.filter(x=>x.Metric).map(x=>({'Metric':x.Metric,Count:Number(x.Count||0),Approved:Number(x.Approved||0),Declined:Number(x.Declined||0),'Hard Declines':Number(x['Hard Declines']||0),'Soft Declines':Number(x['Soft Declines']||0),'Displayed Approval Ratio':Number(x['Displayed Approval Ratio']||0),'Approval Ratio without Hard Decline':Number(x['Approval Ratio without Hard Decline']||0),'Hard Decline %':Number(x['Hard Decline %']||0),'Soft Decline %':Number(x['Soft Decline %']||0),'Top Declined Reason':safe(x['Top Declined Reason']),'Revenue (USD)':Number(x['Revenue (USD)']||0)})),pspWise:pspRows.filter(x=>x.PSP).map(x=>({psp:safe(x.PSP),source:safe(x['Source Mapping']),attempts:Number(x.Attempts||0),approved:Number(x['Approved Attempts']||0),declined:Number(x['Declined Attempts']||0),pendingOther:Number(x['Pending/Other']||0),approval:Number(x['Approval Ratio']),approvalWithoutHard:null,revenue:Number(x['Revenue (USD)']||0),hard:Number(x['Hard Declines (classified)']||0),soft:Number(x['Soft Declines (classified)']||0),unclassified:Number(x['Unclassified Declines']||0),hardPct:Number(x['Hard % of Classified']),softPct:Number(x['Soft % of Classified']),topReason:safe(x['Top Declined Reason (classified)']),topCount:Number(x['Top Declined Count']||0)})),countries:countryRows.filter(x=>x.Rank).map(x=>({rank:Number(x.Rank),country:safe(x.Country),code:safe(x['Country Code']),amount:asNumber(String(x['Amount / Duration']||'').split(' / ')[0]),count:Number(x.Count||0),approval:Number(x['Approval Ratio']||0),approvalWithoutHard:Number(x['Approval Ratio without Hard Decline']||0),hardPct:Number(x['Hard Decline %']||0),softPct:Number(x['Soft Decline %']||0),topReason:safe(x['Top Declined Reason']),topPsp:safe(x['Top Performing PSP']),topPspApproval:Number(x['Top PSP Approval']||0),topPspCount:Number(x['Top PSP Count']||0)})),mappingRules:mapRows.filter(x=>x['Source PSP']).map(x=>({source:safe(x['Source PSP']),dashboard:safe(x['Dashboard PSP']),scope:safe(x['Country scope']),rule:safe(x.Rule)})),taxonomy:[],methodology:methodRows.filter(x=>x.Metric).map(x=>({metric:safe(x.Metric),definition:safe(x.Definition),note:safe(x['Rule / Note'])}))}
+  const rowsOf=name=>XLSX.utils.sheet_to_json(sheet(name),{header:1,defval:null})
+  const findHeader=(rows,key)=>rows.findIndex(r=>r?.some(v=>normalize(v)===normalize(key)))
+  const objects=(name,key)=>{const rows=rowsOf(name);const h=findHeader(rows,key);return h<0?[]:XLSX.utils.sheet_to_json(sheet(name),{range:h,defval:null})}
+  const pspSheet=sheet('PSP Wise')?'PSP Wise':null
+  const countrySheet=sheet('All Countries')?'All Countries':(sheet('Top 50 Countries')?'Top 50 Countries':null)
+  const pspRows=pspSheet?objects(pspSheet,'PSP'):[]
+  const countryRows=countrySheet?objects(countrySheet,'Country'):[]
+  const mapRows=sheet('Mapping Rules')?objects('Mapping Rules','Source PSP'):[]
+  const kRows=objects('Executive Summary','Metric')
+  const methodRows=sheet('Methodology')?objects('Methodology','Metric'):[]
+  return {
+    period:'Uploaded analysis workbook',timezone:'GMT+0',fileName,filterable:false,
+    kpis:kRows.filter(x=>x.Metric).map(x=>({'Metric':x.Metric,Count:Number(x.Count||0),Approved:Number(x.Approved||0),Declined:Number(x.Declined||0),'Hard Declines':Number(x['Hard Declines']||0),'Soft Declines':Number(x['Soft Declines']||0),'Displayed Approval Ratio':Number(x['Displayed Approval Ratio']||0),'Approval Ratio without Hard Decline':Number(x['Approval Ratio without Hard Decline']||0),'Hard Decline %':Number(x['Hard Decline %']||0),'Soft Decline %':Number(x['Soft Decline %']||0),'Top Declined Reason':safe(x['Top Declined Reason']),'Revenue (USD)':Number(x['Revenue (USD)']||0)})),
+    pspWise:pspRows.filter(x=>x.PSP).map(x=>({psp:safe(x.PSP),source:safe(x['Source Mapping']),attempts:Number(x.Attempts||0),approved:Number(x.Approved||0),declined:Number(x.Declined||0),pendingOther:Number(x['Pending / Other']||x['Pending/Other']||0),approval:Number(x['PSP Approval Ratio']??x['Approval Ratio']),approvalWithoutHard:Number(x['Approval Ratio without Hard Decline']||0),revenue:Number(x['Revenue (USD)']||0),hard:Number(x['Hard Declines']||0),soft:Number(x['Soft Declines']||0),unclassified:Number(x.Unclassified||0),hardPct:Number(x['Hard %']),softPct:Number(x['Soft %']),topReason:safe(x['Top Declined Reason']),topCount:Number(x['Top Declined Count']||0)})),
+    countries:countryRows.filter(x=>x.Rank).map(x=>({rank:Number(x.Rank),country:safe(x.Country),code:safe(x['Country Code']),amount:asNumber(x['Approved Revenue (USD)']??String(x['Amount / Duration']||'').split(' / ')[0]),count:Number(x.Count||0),approval:Number(x['Approval Ratio']||0),approvalWithoutHard:Number(x['Approval Ratio without Hard Decline']||0),hardPct:Number(x['Hard Decline %']||0),softPct:Number(x['Soft Decline %']||0),topReason:safe(x['Top Declined Reason']),topPsp:safe(x['Top Performing PSP']),topPspApproval:Number(x['Top PSP Approval']||0),topPspCount:Number(x['Top PSP Count']||0)})),
+    mappingRules:mapRows.filter(x=>x['Source PSP']).map(x=>({source:safe(x['Source PSP']),dashboard:safe(x['Dashboard PSP']),scope:safe(x['Country Scope']||x['Country scope']),rule:safe(x.Rule)})),
+    taxonomy:[],
+    methodology:methodRows.filter(x=>x.Metric).map(x=>({metric:safe(x.Metric),definition:safe(x.Definition),note:safe(x['Rule / Note'])}))
+  }
 }
 
 function readFile(file){
@@ -299,9 +349,10 @@ function MultiSelectFilter({title,icon,options,selected,setSelected,mode,setMode
   </div>
 }
 
-function DateFilter({startDate,setStartDate,endDate,setEndDate}){
+function DateFilter({startDate,setStartDate,endDate,setEndDate,timezone,setTimezone}){
   return <div className="filter-group">
     <div className="filter-title"><span className="filter-icon">▣</span><span>Date Range</span></div>
+    <label className="date-label">Analysis Timezone<select className="timezone-select" value={timezone} onChange={e=>setTimezone(e.target.value)}>{TIMEZONE_OPTIONS.map(t=><option key={t.label} value={t.label}>{t.label}</option>)}</select></label>
     <label className="date-label">Start Date<input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} /></label>
     <label className="date-label">End Date<input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} /></label>
   </div>
@@ -309,11 +360,11 @@ function DateFilter({startDate,setStartDate,endDate,setEndDate}){
 
 function App(){
  const [source,setSource]=useState(null),[tab,setTab]=useState('overview'),[approvalMode,setApprovalMode]=useState('with'),[countryQuery,setCountryQuery]=useState(''),[countryPsp,setCountryPsp]=useState('All'),[pspQuery,setPspQuery]=useState(''),[pspMin,setPspMin]=useState(20),[declineType,setDeclineType]=useState('All'),[declineQuery,setDeclineQuery]=useState(''),[notice,setNotice]=useState(''),[loading,setLoading]=useState(false)
- const [startDate,setStartDate]=useState(''),[endDate,setEndDate]=useState('')
+ const [startDate,setStartDate]=useState(''),[endDate,setEndDate]=useState(''),[timezone,setTimezone]=useState('GMT+0')
  const [pspSelected,setPspSelected]=useState([]),[pspMode,setPspMode]=useState('include')
  const [midSelected,setMidSelected]=useState([]),[midMode,setMidMode]=useState('include')
  const [countrySelected,setCountrySelected]=useState([]),[countryMode,setCountryMode]=useState('include')
- const filters=useMemo(()=>({startDate,endDate,pspSelected,pspMode,midSelected,midMode,countrySelected,countryMode}),[startDate,endDate,pspSelected,pspMode,midSelected,midMode,countrySelected,countryMode])
+ const filters=useMemo(()=>({startDate,endDate,timezone,pspSelected,pspMode,midSelected,midMode,countrySelected,countryMode}),[startDate,endDate,timezone,pspSelected,pspMode,midSelected,midMode,countrySelected,countryMode])
  const data=useMemo(()=>{if(!source)return null;if(!source.filterable)return source;return buildFromRaw(source.rawRows,source.fileName,filters)},[source,filters])
  const options=useMemo(()=>{
    if(!source?.filterable)return {psps:[],mids:[],countries:[]}
@@ -321,11 +372,11 @@ function App(){
    return {
      psps:Array.from(new Set(rows.map(x=>safe(x.pspName)).filter(Boolean))).sort(),
      mids:Array.from(new Set(rows.map(x=>safe(x.midAlias)||'Unknown'))).sort(),
-     countries:Array.from(new Set(rows.map(x=>safe(x.country)||'Unknown'))).sort()
+     countries:Array.from(new Set(rows.map(x=>countryName(x.country)||'Unknown'))).sort()
    }
  },[source])
  const activeFilterCount=[startDate,endDate,pspSelected.length,midSelected.length,countrySelected.length].filter(Boolean).length
- const clearFilters=()=>{setStartDate('');setEndDate('');setPspSelected([]);setMidSelected([]);setCountrySelected([]);setPspMode('include');setMidMode('include');setCountryMode('include')}
+ const clearFilters=()=>{setStartDate('');setEndDate('');setTimezone('GMT+0');setPspSelected([]);setMidSelected([]);setCountrySelected([]);setPspMode('include');setMidMode('include');setCountryMode('include')}
  const handleFile=async file=>{setLoading(true);try{const d=await readFile(file);setSource(d);clearFilters();setTab('overview');setCountryQuery('');setPspQuery('');setNotice(`Loaded ${file.name}`)}catch(e){setNotice(e.message==='RAW_FILE'?'This file does not contain the required transaction columns (merchantOrderId, pspName, status, amount).':'Could not read this file. Please upload a transaction CSV/Excel report.')}finally{setLoading(false);setTimeout(()=>setNotice(''),4500)}}
  const currentKpi=data?.kpis?.[approvalMode==='with'?0:1],withoutIndia=data?.kpis?.[approvalMode==='with'?2:3]
  const countries=useMemo(()=>{if(!data)return[];let a=[...data.countries];if(countryQuery){const q=countryQuery.toLowerCase();a=a.filter(x=>`${x.country} ${x.code} ${x.topReason} ${x.topPsp}`.toLowerCase().includes(q))}if(countryPsp!=='All')a=a.filter(x=>x.topPsp===countryPsp);return a},[data,countryQuery,countryPsp])
@@ -334,18 +385,84 @@ function App(){
  const topCountries=useMemo(()=>data?[...data.countries].slice(0,10):[],[data])
  const topPsps=useMemo(()=>data?[...data.pspWise].filter(x=>x.attempts>=pspMin).sort((a,b)=>(b.approval??-1)-(a.approval??-1)).slice(0,10):[],[data,pspMin])
  const pspOptions=data?['All',...Array.from(new Set(data.countries.map(x=>x.topPsp))).filter(Boolean).sort()]:[]
- const downloadFullExcel=()=>{if(!data)return;const wb=XLSX.utils.book_new();const add=(name,rows)=>{const ws=XLSX.utils.json_to_sheet(rows);ws['!freeze']={xSplit:0,ySplit:1};XLSX.utils.book_append_sheet(wb,ws,name)};add('Executive Summary',data.kpis);add('All Countries',data.countries);add('PSP Wise',data.pspWise);add('Hard Soft Declines',data.taxonomy);add('Mapping Rules',data.mappingRules);add('Methodology',data.methodology);add('Applied Filters',[{Filter:'Start Date (GMT+3)',Value:startDate||'All'},{Filter:'End Date (GMT+3)',Value:endDate||'All'},{Filter:'PSP Mode',Value:pspMode},{Filter:'PSP Selection',Value:pspSelected.length?pspSelected.join(', '):'All'},{Filter:'MID Alias Mode',Value:midMode},{Filter:'MID Alias Selection',Value:midSelected.length?midSelected.join(', '):'All'},{Filter:'Country Mode',Value:countryMode},{Filter:'Country Selection',Value:countrySelected.length?countrySelected.join(', '):'All'}]);add('Report Notes',[{Item:'Country / cascaded approval','Rule':'Unique merchantOrderId; approved wins on retry/cascade.'},{Item:'PSP approval','Rule':'Individual PSP attempts; merchantOrderId is NOT deduplicated.'},{Item:'Country ranking','Rule':'All countries ranked by approved revenue; no Top-50 limit.'},{Item:'Source file','Rule':data.fileName},{Item:'Period','Rule':data.period}]);XLSX.writeFile(wb,`FundedNext_Approval_Analysis_${new Date().toISOString().slice(0,10)}.xlsx`)}
+ const downloadFullExcel=()=>{
+   if(!data)return
+   const wb=XLSX.utils.book_new()
+   const moneyCols=new Set(['Revenue (USD)','Revenue','Approved Revenue (USD)','Amount / Duration (USD)'])
+   const pctCols=new Set(['Approval Ratio','Approval Ratio without Hard Decline','Displayed Approval Ratio','Hard Decline %','Soft Decline %','Top PSP Approval','PSP Approval Ratio','Hard %','Soft %'])
+   const addSheet=(name,title,subtitle,rows)=>{
+     const keys=rows.length?Object.keys(rows[0]):[]
+     const aoa=[[title],[subtitle],[],keys,...rows.map(r=>keys.map(k=>r[k] ?? ''))]
+     const ws=XLSX.utils.aoa_to_sheet(aoa)
+     const lastCol=Math.max(keys.length,1), lastRow=aoa.length
+     ws['!merges']=[{s:{r:0,c:0},e:{r:0,c:lastCol-1}},{s:{r:1,c:0},e:{r:1,c:lastCol-1}}]
+     ws['!cols']=keys.map(k=>({wch:Math.min(Math.max(String(k).length+4,14),32)}))
+     if(lastCol>0) ws['!autofilter']={ref:`A4:${XLSX.utils.encode_col(lastCol-1)}${lastRow}`}
+     const titleStyle={font:{name:'Aptos Display',sz:16,bold:true,color:{rgb:'FFFFFFFF'}},fill:{patternType:'solid',fgColor:{rgb:'FF163A5F'}},alignment:{vertical:'center'}}
+     const subtitleStyle={font:{name:'Aptos',sz:10,italic:true,color:{rgb:'FF5B6B7F'}},fill:{patternType:'solid',fgColor:{rgb:'FFEAF0F6'}}}
+     const headerStyle={font:{name:'Aptos',sz:10,bold:true,color:{rgb:'FFFFFFFF'}},fill:{patternType:'solid',fgColor:{rgb:'FF2F6FED'}},alignment:{horizontal:'center',vertical:'center',wrapText:true}}
+     const bodyStyle={font:{name:'Aptos',sz:10,color:{rgb:'FF172033'}},alignment:{vertical:'center'}}
+     const altStyle={font:{name:'Aptos',sz:10,color:{rgb:'FF172033'}},fill:{patternType:'solid',fgColor:{rgb:'FFF6F8FB'}},alignment:{vertical:'center'}}
+     ws['A1'].s=titleStyle; ws['A2'].s=subtitleStyle
+     for(let c=0;c<lastCol;c++){
+       const hc=ws[XLSX.utils.encode_cell({r:3,c})]; if(hc)hc.s=headerStyle
+     }
+     for(let r=4;r<aoa.length;r++){
+       for(let c=0;c<lastCol;c++){
+         const cell=ws[XLSX.utils.encode_cell({r,c})]
+         if(!cell)continue
+         cell.s=(r%2===0)?altStyle:bodyStyle
+       }
+     }
+     for(let r=4;r<aoa.length;r++){
+       for(let c=0;c<keys.length;c++){
+         const key=keys[c], cell=ws[XLSX.utils.encode_cell({r,c})]
+         if(!cell)continue
+         if(moneyCols.has(key))cell.z='$#,##0.00'
+         if(pctCols.has(key))cell.z='0.00%'
+       }
+     }
+     ws['!rows']=[{hpt:26},{hpt:20},{hpt:8},{hpt:30}]
+     XLSX.utils.book_append_sheet(wb,ws,name)
+   }
+   addSheet('Executive Summary','FundedNext Approval Ratio Analysis',`Analysis timezone: ${timezone} | ${data.period}`,data.kpis.map(x=>({...x,'Analysis Timezone':timezone})))
+   addSheet('All Countries','All Countries — Revenue Ranked',`Full country list | Revenue highest to lowest | ${timezone}`,data.countries.map(x=>({Rank:x.rank,Country:x.country,'Country Code':x.code,'Approved Revenue (USD)':x.amount,Count:x.count,'Approval Ratio':x.approval,'Approval Ratio without Hard Decline':x.approvalWithoutHard,'Hard Decline %':x.hardPct,'Soft Decline %':x.softPct,'Top Declined Reason':x.topReason,'Top Performing PSP':x.topPsp,'Top PSP Approval':x.topPspApproval,'Top PSP Count':x.topPspCount})))
+   addSheet('PSP Wise','PSP Wise — Attempt Level',`PSP approval does not deduplicate merchantOrderId | ${timezone}`,data.pspWise.map(x=>({PSP:x.psp,'Source Mapping':x.source,Attempts:x.attempts,Approved:x.approved,Declined:x.declined,'Pending / Other':x.pendingOther,'PSP Approval Ratio':x.approval,'Approval Ratio without Hard Decline':x.approvalWithoutHard,'Revenue (USD)':x.revenue,'Hard Declines':x.hard,'Soft Declines':x.soft,Unclassified:x.unclassified,'Hard %':x.hardPct,'Soft %':x.softPct,'Top Declined Reason':x.topReason,'Top Declined Count':x.topCount})))
+   addSheet('Hard Soft Declines','Hard & Soft Decline List','Standardized decline taxonomy from the uploaded transaction data',data.taxonomy.map(x=>({'Decline Reason':x.reason,Type:x.type,Count:x.count})))
+   addSheet('Mapping Rules','PSP Mapping Rules','Dashboard naming and country scope',data.mappingRules.map(x=>({'Source PSP':x.source,'Dashboard PSP':x.dashboard,'Country Scope':x.scope,Rule:x.rule})))
+   addSheet('Methodology','Calculation Methodology',`Selected timezone: ${timezone}`,data.methodology.map(x=>({Metric:x.metric,Definition:x.definition,'Rule / Note':x.note})))
+   addSheet('Applied Filters','Applied Filters','Filters used for this exported analysis',[
+     {Filter:'Analysis Timezone',Value:timezone},
+     {Filter:'Start Date',Value:startDate||'All'},
+     {Filter:'End Date',Value:endDate||'All'},
+     {Filter:'PSP Mode',Value:pspMode},
+     {Filter:'PSP Selection',Value:pspSelected.length?pspSelected.join(', '):'All'},
+     {Filter:'MID Alias Mode',Value:midMode},
+     {Filter:'MID Alias Selection',Value:midSelected.length?midSelected.join(', '):'All'},
+     {Filter:'Country Mode',Value:countryMode},
+     {Filter:'Country Selection',Value:countrySelected.length?countrySelected.join(', '):'All'}
+   ])
+   addSheet('Report Notes','Report Notes','Core calculation rules',[
+     {Item:'Country / cascaded approval',Rule:'Unique merchantOrderId; approved wins on retry/cascade.'},
+     {Item:'PSP approval',Rule:'Individual PSP attempts; merchantOrderId is NOT deduplicated.'},
+     {Item:'Country ranking',Rule:'All countries ranked by approved revenue; no Top-50 limit.'},
+     {Item:'Country naming',Rule:'Full country name is shown; ISO alpha-2 code is kept in a separate Country Code column.'},
+     {Item:'Timezone',Rule:`Source transaction timestamps are interpreted as GMT+0 and converted to ${timezone} before date filtering.`},
+     {Item:'Source file',Rule:data.fileName}
+   ])
+   XLSX.writeFile(wb,`FundedNext_Approval_Analysis_${timezone.replace('+','plus').replace('-','minus')}_${new Date().toISOString().slice(0,10)}.xlsx`)
+ }
 
- if(!data)return <div className="landing"><div className="landing-top"><div className="brand"><div className="brand-mark">FN</div><div><div className="brand-title">FundedNext</div><div className="brand-sub">Approval Ratio Analysis</div></div></div></div><main className="landing-content"><div className="welcome-icon">▤</div><h1>Welcome to Approval Ratio Analytics</h1><p>Upload your transaction data to unlock powerful approval, revenue, country and PSP insights.</p><UploadBox onFile={handleFile}/>{loading&&<div className="loading">Processing your transaction file…</div>}<div className="landing-note"><b>Calculation rules</b><span>Country approval uses unique merchantOrderId.</span><span>PSP approval uses individual attempts — no merchantOrderId deduplication.</span><span>Countries are ranked by approved revenue and the full country list is available.</span></div></main>{notice&&<div className="notice">{notice}</div>}</div>
+ if(!data)return <div className="landing"><div className="landing-top"><div className="brand"><div className="brand-mark">FN</div><div><div className="brand-title">FundedNext</div><div className="brand-sub">Approval Ratio Analysis</div></div></div></div><main className="landing-content"><div className="welcome-icon">▤</div><h1>Welcome to Approval Ratio Analytics</h1><p>Upload your transaction data to unlock powerful approval, revenue, country and PSP insights.</p><UploadBox onFile={handleFile}/>{loading&&<div className="loading">Processing your transaction file…</div>}<div className="landing-note"><b>Calculation rules</b><span>Country approval uses unique merchantOrderId.</span><span>PSP approval uses individual attempts — no merchantOrderId deduplication.</span><span>Countries are ranked by approved revenue and the full country list is available.</span><span>Analysis timezone defaults to GMT+0 and can be changed after upload.</span></div></main>{notice&&<div className="notice">{notice}</div>}</div>
 
  return <div className="app-shell"><header className="topbar"><div className="brand"><div className="brand-mark">FN</div><div><div className="brand-title">FundedNext</div><div className="brand-sub">Approval Ratio Analysis</div></div></div><div className="header-actions"><span className="period-chip">{data.period}</span><button className="download-btn" onClick={downloadFullExcel}>Download Full Excel</button><label className="upload-btn">Upload New Data<input type="file" accept=".csv,.xlsx,.xls" onChange={e=>{const f=e.target.files?.[0];if(f)handleFile(f)}}/></label></div></header><div className="layout"><aside className="sidebar">
  {source?.filterable&&<div className="filters-panel"><div className="filters-head"><div><div className="eyebrow light">FILTERS</div><h3>Transaction Filters</h3></div>{activeFilterCount>0&&<button className="clear-btn" onClick={clearFilters}>Clear</button>}</div>
- <DateFilter startDate={startDate} setStartDate={setStartDate} endDate={endDate} setEndDate={setEndDate}/>
+ <DateFilter startDate={startDate} setStartDate={setStartDate} endDate={endDate} setEndDate={setEndDate} timezone={timezone} setTimezone={setTimezone}/>
  <MultiSelectFilter title="PSP" icon="▥" options={options.psps} selected={pspSelected} setSelected={setPspSelected} mode={pspMode} setMode={setPspMode} placeholder="Select PSP"/>
  <MultiSelectFilter title="MID Alias" icon="#" options={options.mids} selected={midSelected} setSelected={setMidSelected} mode={midMode} setMode={setMidMode} placeholder="Select MID Alias"/>
  <MultiSelectFilter title="Country" icon="◉" options={options.countries} selected={countrySelected} setSelected={setCountrySelected} mode={countryMode} setMode={setCountryMode} placeholder="Select Country"/>
  </div>}
- {source?.filterable&&<div className="filter-summary"><span>{activeFilterCount?`${activeFilterCount} filter${activeFilterCount>1?'s':''} active`:'All transaction data'}</span><b>{num(data?.rawObjects?.length||0)} rows loaded</b></div>}
+ {source?.filterable&&<div className="filter-summary"><span>{activeFilterCount?`${activeFilterCount} filter${activeFilterCount>1?'s':''} active`:'All transaction data'} · {timezone}</span><b>{num(data?.rawObjects?.length||0)} rows loaded</b></div>}
  {['overview','countries','psps','declines','mapping','methodology'].map((id,i)=>{const labels=[['overview','Overview','▦'],['countries','All Countries','◉'],['psps','PSP Performance','◈'],['declines','Hard / Soft Declines','!'],['mapping','PSP Mapping','↔'],['methodology','Methodology','i']][i];return <button key={id} className={`nav-item ${tab===id?'active':''}`} onClick={()=>setTab(id)}><span>{labels[2]}</span>{labels[1]}</button>})}
  <div className="sidebar-note"><b>Calculation rule</b><br/>Country / cascaded KPIs use unique <code>merchantOrderId</code>.<br/><br/>PSP KPIs use individual attempts — <b>no merchantOrderId deduplication</b>.<br/><br/><b>Country ranking</b><br/>Approved revenue, highest to lowest.</div></aside><main className="content">{notice&&<div className="notice">{notice}</div>}
  {tab==='overview'&&<><section className="hero"><div><div className="eyebrow">EXECUTIVE VIEW</div><h1>Approval & Decline Performance</h1><p>Country metrics are cascaded; PSP metrics are attempt-based. Countries are ranked by approved revenue.</p></div><div className="segmented"><button className={approvalMode==='with'?'selected':''} onClick={()=>setApprovalMode('with')}>With Hard Decline</button><button className={approvalMode==='without'?'selected':''} onClick={()=>setApprovalMode('without')}>Without Hard Decline</button></div></section><div className="kpi-grid"><KpiCard label={approvalMode==='with'?'Cascaded Approval Ratio':'Approval Ratio without Hard Decline'} value={pct(currentKpi['Displayed Approval Ratio'])} sub={`${num(currentKpi.Count)} unique merchant orders`} tone="blue"/><KpiCard label="Without India" value={pct(withoutIndia['Displayed Approval Ratio'])} sub="Cascaded country scenario" tone="purple"/><KpiCard label="Revenue" value={money(currentKpi['Revenue (USD)'])} sub="Approved transaction revenue" tone="green"/><KpiCard label="Approved" value={num(currentKpi.Approved)} sub={`${num(currentKpi.Declined)} declined`} tone="amber"/><KpiCard label="Hard Declines" value={num(currentKpi['Hard Declines'])} sub={pct(currentKpi['Hard Decline %'])+' of classified declines'} tone="red"/><KpiCard label="Top Decline Reason" value={currentKpi['Top Declined Reason']} sub="Highest-volume classified reason" tone="slate"/></div><section className="grid-2"><div className="panel"><div className="panel-head"><div><h2>Top Countries by Revenue</h2><p>Top 10 from the full country list</p></div></div>{topCountries.map(c=><RatioBar key={c.code} label={`${c.rank}. ${c.country}`} value={c.amount/(data.countries[0]?.amount||1)} accent="green"/>)} </div><div className="panel"><div className="panel-head"><div><h2>PSP Approval</h2><p>Attempt-based · minimum {pspMin} attempts</p></div></div>{topPsps.map(p=><RatioBar key={p.psp} label={p.psp} value={p.approval} accent={(p.approval??0)>=.75?'green':(p.approval??0)>=.5?'blue':'red'}/>)}</div></section><section className="grid-2"><div className="panel"><div className="panel-head"><div><h2>Decline Mix</h2><p>Terminal declined unique orders</p></div></div><div className="donut-wrap"><div className="donut" style={{'--hard':`${clamp(currentKpi['Hard Decline %'])}%`}}><div><b>{pct(currentKpi['Hard Decline %'])}</b><span>hard</span></div></div><div className="legend"><div><i className="dot hard"></i>Hard declines <b>{num(currentKpi['Hard Declines'])}</b></div><div><i className="dot soft"></i>Soft declines <b>{num(currentKpi['Soft Declines'])}</b></div></div></div></div><div className="panel"><div className="panel-head"><div><h2>Scenario Comparison</h2><p>All countries and without India</p></div></div><RatioBar label="All countries · with hard decline" value={data.kpis[0]['Displayed Approval Ratio']}/><RatioBar label="All countries · without hard decline" value={data.kpis[1]['Displayed Approval Ratio']} accent="green"/><RatioBar label="Without India · with hard decline" value={data.kpis[2]['Displayed Approval Ratio']} accent="purple"/><RatioBar label="Without India · without hard decline" value={data.kpis[3]['Displayed Approval Ratio']} accent="green"/></div></section></>}

@@ -46,3 +46,18 @@ After uploading a transaction file, the left filter panel supports:
 - Country multi-select with Include / Exclude modes
 - Select All / clear selections and removable selection chips
 All dashboard KPIs, revenue, approval ratios, decline analysis, country ranking, PSP analysis and Excel export reflect the active filters.
+
+
+## Timezone
+- Source transaction timestamps are interpreted as GMT+0 when no explicit offset is present.
+- The dashboard defaults to GMT+0.
+- You can switch the analysis timezone to GMT+3, GMT+6, or other listed GMT offsets before applying date filters.
+- The selected timezone is recorded in the Excel export.
+
+## Country naming
+- Dashboard and Excel use full country names such as United States, India, China, Canada and United Kingdom.
+- ISO alpha-2 codes remain in a separate Country Code column.
+
+## Excel export
+- The export is designed as a presentable multi-sheet workbook with title rows, subtitles, filters, formatted percentages/currency, autofilters and the full country list.
+- The previous unsupported freeze metadata has been removed to avoid Excel repair warnings.
