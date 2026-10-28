@@ -31,3 +31,5 @@ button{cursor:pointer}.app-shell{min-height:100vh}.topbar{height:72px;background
 @media(max-width:850px){.sidebar{overflow:visible}.filters-panel{margin-bottom:14px}.multi-menu{position:fixed;left:16px;right:16px;top:auto;max-height:50vh}}
 .timezone-select{display:block;width:100%;margin-top:5px;border:1px solid #d9e1ec;background:#f7f9fc;border-radius:9px;padding:10px 9px;color:#172033;font-size:11px;outline:none}
 .timezone-select:focus{border-color:#5f6fff;box-shadow:0 0 0 2px #5f6fff18}
+
+.loading{margin-top:18px;font-weight:700;color:#53627a}.progress-track{height:8px;background:#e8edf4;border-radius:99px;overflow:hidden;margin-top:9px;max-width:620px;margin-left:auto;margin-right:auto}.progress-fill{height:100%;background:#2f6fed;border-radius:99px;transition:width .2s ease}

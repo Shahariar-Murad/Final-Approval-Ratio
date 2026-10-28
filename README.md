@@ -61,3 +61,7 @@ All dashboard KPIs, revenue, approval ratios, decline analysis, country ranking,
 ## Excel export
 - The export is designed as a presentable multi-sheet workbook with title rows, subtitles, filters, formatted percentages/currency, autofilters and the full country list.
 - The previous unsupported freeze metadata has been removed to avoid Excel repair warnings.
+
+## Large-file handling
+- CSV files use Papa Parse streaming + Web Worker mode, so large CSV reports can be processed without loading the entire file into an XLSX workbook object.
+- Large Excel workbooks (100 MB+) are intentionally rejected in the browser because XLSX parsing requires the workbook to be buffered in memory. Convert very large Excel reports to CSV for streaming mode.

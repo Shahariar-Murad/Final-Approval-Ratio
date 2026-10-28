@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx-js-style'
+import Papa from 'papaparse'
 import { REASON_MAP } from './reasonMap'
 import { COUNTRY_NAMES, COUNTRY_CODES } from './countryMeta'
 
@@ -174,8 +175,11 @@ function applyRawFilters(rows, filters){
 }
 
 function buildFromRaw(rows,fileName='Transaction Data',filterConfig=null){
+  return buildFromObjects(rawRowsToObjects(rows),fileName,filterConfig)
+}
+
+function buildFromObjects(parsed,fileName='Transaction Data',filterConfig=null){
   const timezone=filterConfig?.timezone || 'GMT+0'
-  const parsed=rawRowsToObjects(rows)
   const r=applyRawFilters(parsed,{...(filterConfig||{}),timezone})
   const approvedRows=r.filter(x=>x.status==='approved')
   const declinedRows=r.filter(x=>x.status==='declined')
@@ -284,7 +288,7 @@ function buildFromRaw(rows,fileName='Transaction Data',filterConfig=null){
   for(const x of r.filter(x=>x.status==='declined')){const inf=reasonInfo(x.declineReason);if(inf){const k=inf.reason+'||'+inf.type;taxonomy[k]=(taxonomy[k]||0)+1}}
   const taxonomyRows=Object.entries(taxonomy).map(([k,count])=>{const [reason,type]=k.split('||');return {reason,type,count}}).sort((a,b)=>b.count-a.count)
 
-  return {period,timezone,fileName,rawRows:rows,rawObjects:parsed,filterable:true,kpis,pspWise:def,countries:countryRecords,mappingRules:PSP_RULES.map(x=>({source:x[0],dashboard:x[1],scope:x[2],rule:x[3]})),taxonomy:taxonomyRows,methodology:[
+  return {period,timezone,fileName,rawRows:null,rawObjects:parsed,filterable:true,kpis,pspWise:def,countries:countryRecords,mappingRules:PSP_RULES.map(x=>({source:x[0],dashboard:x[1],scope:x[2],rule:x[3]})),taxonomy:taxonomyRows,methodology:[
     {metric:'Period',definition:period,note:'processing_date is interpreted as source GMT+0 and converted to the selected analysis timezone.'},
     {metric:'Unique transaction key',definition:'merchantOrderId',note:'Repeated PSP attempts are cascaded into one country-level outcome.'},
     {metric:'Cascaded outcome',definition:'Approved if any attempt is approved; otherwise Declined',note:'Approved wins on retry/cascade.'},
@@ -321,13 +325,59 @@ function parseAnalysisWorkbook(wb,fileName){
   }
 }
 
-function readFile(file){
-  return new Promise((resolve,reject)=>{const fr=new FileReader();fr.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:'array'});const first=wb.SheetNames.find(n=>{const rows=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,defval:null,raw:false});const h=(rows[0]||[]).map(normalize);return h.includes('merchantorderid')&&h.includes('pspname')&&h.includes('status')})||wb.SheetNames[0];const rows=XLSX.utils.sheet_to_json(wb.Sheets[first],{header:1,defval:null,raw:false});const headers=(rows[0]||[]).map(normalize);if(headers.includes('merchantorderid')&&headers.includes('pspname')&&headers.includes('status')) resolve(buildFromRaw(rows,file.name)); else resolve(parseAnalysisWorkbook(wb,file.name));}catch(err){reject(err)}};fr.onerror=reject;fr.readAsArrayBuffer(file)})
+function normalizeCsvObject(row,i){
+  const pick=(...names)=>{for(const n of names){if(Object.prototype.hasOwnProperty.call(row,n))return row[n]} const lower={};for(const k of Object.keys(row))lower[normalize(k)]=row[k];for(const n of names){if(lower[normalize(n)]!=null)return lower[normalize(n)]}return ''}
+  return {
+    _i:i,
+    merchantOrderId:safe(pick('merchantOrderId','merchant_order_id','merchantOrderID','id')) || `ROW_${i+1}`,
+    pspName:safe(pick('pspName','PSP Name','psp','paymentServiceProvider')),
+    country:safe(pick('country','Country','customerCountry','customer_country')) || 'Unknown',
+    amount:asNumber(pick('amount','Amount','transactionAmount','transaction_amount')),
+    status:normalize(pick('status','Status','transactionStatus','transaction_state')),
+    declineReason:safe(pick('declineReason','Decline Reason','statusReason','decline_reason','reject_reason')),
+    processingDate:safe(pick('processing_date','processingDate','processing date','transactionDate','transaction_date','created_at','createdAt')),
+    midAlias:safe(pick('midAlias','MID Alias','mid_alias','merchantId','merchant_id')),
+    currency:safe(pick('currency','Currency','transactionCurrency','authorization_currency'))
+  }
+}
+
+function readLargeCsv(file,onProgress){
+  return new Promise((resolve,reject)=>{
+    const parsed=[]
+    let rowCount=0
+    let lastProgress=0
+    Papa.parse(file,{
+      header:true,
+      skipEmptyLines:'greedy',
+      worker:true,
+      chunkSize:10*1024*1024,
+      chunk:results=>{
+        for(const row of results.data){
+          if(!row || typeof row!=='object')continue
+          parsed.push(normalizeCsvObject(row,rowCount++))
+        }
+        if(onProgress){
+          // Papa exposes cursor for local streaming chunks. Fall back to row progress when unavailable.
+          const cursor=Number(results.meta?.cursor||0)
+          const p=Math.max(lastProgress,Math.min(99,Math.round(cursor/file.size*100)))
+          lastProgress=p; onProgress(p,rowCount)
+        }
+      },
+      complete:()=>{onProgress?.(100,rowCount);resolve(buildFromObjects(parsed,file.name,null))},
+      error:(err)=>reject(new Error(`CSV parsing failed: ${err?.message||err}`))
+    })
+  })
+}
+
+function readFile(file,onProgress){
+  const name=file.name.toLowerCase()
+  if(name.endsWith('.csv') || file.type==='text/csv') return readLargeCsv(file,onProgress)
+  return new Promise((resolve,reject)=>{const fr=new FileReader();fr.onload=e=>{try{const wb=XLSX.read(e.target.result,{type:'array',dense:true});const first=wb.SheetNames.find(n=>{const rows=XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,defval:null,raw:false});const h=(rows[0]||[]).map(normalize);return h.includes('merchantorderid')&&h.includes('pspname')&&h.includes('status')})||wb.SheetNames[0];const rows=XLSX.utils.sheet_to_json(wb.Sheets[first],{header:1,defval:null,raw:false});const headers=(rows[0]||[]).map(normalize);if(headers.includes('merchantorderid')&&headers.includes('pspname')&&headers.includes('status')) resolve(buildFromRaw(rows,file.name)); else resolve(parseAnalysisWorkbook(wb,file.name));}catch(err){reject(err)}};fr.onerror=()=>reject(new Error(`Excel parsing failed: ${fr.error?.message||'browser memory or workbook parsing limit reached'}`));fr.readAsArrayBuffer(file)})
 }
 
 function RatioBar({value,label,accent='blue'}){return <div className="ratio-row"><div className="ratio-label"><span>{label}</span><strong>{pct(value)}</strong></div><div className="bar"><span className={`bar-fill ${accent}`} style={{width:`${clamp(value)}%`}}/></div></div>}
 function KpiCard({label,value,sub,tone='blue'}){return <div className={`kpi-card ${tone}`}><div className="kpi-label">{label}</div><div className="kpi-value">{value}</div>{sub&&<div className="kpi-sub">{sub}</div>}</div>}
-function UploadBox({onFile}){const ref=useRef();const [drag,setDrag]=useState(false);const choose=e=>{const f=e.target.files?.[0];if(f)onFile(f)};return <div className={`upload-box ${drag?'dragging':''}`} onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);const f=e.dataTransfer.files?.[0];if(f)onFile(f)}}><div className="upload-icons"><span>↥</span><span>▤</span><span>▧</span></div><h2>Upload Transaction Data</h2><p>Drag and drop your CSV or Excel file here, or click to browse</p><small>Supports .csv, .xlsx, and .xls formats</small><button className="browse-btn" onClick={()=>ref.current?.click()}>Browse Files</button><input ref={ref} type="file" accept=".csv,.xlsx,.xls" onChange={choose}/></div>}
+function UploadBox({onFile}){const ref=useRef();const [drag,setDrag]=useState(false);const choose=e=>{const f=e.target.files?.[0];if(f)onFile(f)};return <div className={`upload-box ${drag?'dragging':''}`} onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);const f=e.dataTransfer.files?.[0];if(f)onFile(f)}}><div className="upload-icons"><span>↥</span><span>▤</span><span>▧</span></div><h2>Upload Transaction Data</h2><p>Drag and drop your CSV or Excel file here, or click to browse</p><small>Supports .csv, .xlsx, and .xls · Large CSV files are processed in streaming mode</small><button className="browse-btn" onClick={()=>ref.current?.click()}>Browse Files</button><input ref={ref} type="file" accept=".csv,.xlsx,.xls" onChange={choose}/></div>}
 
 function MultiSelectFilter({title,icon,options,selected,setSelected,mode,setMode,placeholder}){
   const [open,setOpen]=useState(false)
@@ -359,13 +409,13 @@ function DateFilter({startDate,setStartDate,endDate,setEndDate,timezone,setTimez
 }
 
 function App(){
- const [source,setSource]=useState(null),[tab,setTab]=useState('overview'),[approvalMode,setApprovalMode]=useState('with'),[countryQuery,setCountryQuery]=useState(''),[countryPsp,setCountryPsp]=useState('All'),[pspQuery,setPspQuery]=useState(''),[pspMin,setPspMin]=useState(20),[declineType,setDeclineType]=useState('All'),[declineQuery,setDeclineQuery]=useState(''),[notice,setNotice]=useState(''),[loading,setLoading]=useState(false)
+ const [source,setSource]=useState(null),[tab,setTab]=useState('overview'),[approvalMode,setApprovalMode]=useState('with'),[countryQuery,setCountryQuery]=useState(''),[countryPsp,setCountryPsp]=useState('All'),[pspQuery,setPspQuery]=useState(''),[pspMin,setPspMin]=useState(20),[declineType,setDeclineType]=useState('All'),[declineQuery,setDeclineQuery]=useState(''),[notice,setNotice]=useState(''),[loading,setLoading]=useState(false),[loadProgress,setLoadProgress]=useState(0),[loadRows,setLoadRows]=useState(0)
  const [startDate,setStartDate]=useState(''),[endDate,setEndDate]=useState(''),[timezone,setTimezone]=useState('GMT+0')
  const [pspSelected,setPspSelected]=useState([]),[pspMode,setPspMode]=useState('include')
  const [midSelected,setMidSelected]=useState([]),[midMode,setMidMode]=useState('include')
  const [countrySelected,setCountrySelected]=useState([]),[countryMode,setCountryMode]=useState('include')
  const filters=useMemo(()=>({startDate,endDate,timezone,pspSelected,pspMode,midSelected,midMode,countrySelected,countryMode}),[startDate,endDate,timezone,pspSelected,pspMode,midSelected,midMode,countrySelected,countryMode])
- const data=useMemo(()=>{if(!source)return null;if(!source.filterable)return source;return buildFromRaw(source.rawRows,source.fileName,filters)},[source,filters])
+ const data=useMemo(()=>{if(!source)return null;if(!source.filterable)return source;return buildFromObjects(source.rawObjects,source.fileName,filters)},[source,filters])
  const options=useMemo(()=>{
    if(!source?.filterable)return {psps:[],mids:[],countries:[]}
    const rows=source.rawObjects||[]
@@ -377,7 +427,7 @@ function App(){
  },[source])
  const activeFilterCount=[startDate,endDate,pspSelected.length,midSelected.length,countrySelected.length].filter(Boolean).length
  const clearFilters=()=>{setStartDate('');setEndDate('');setTimezone('GMT+0');setPspSelected([]);setMidSelected([]);setCountrySelected([]);setPspMode('include');setMidMode('include');setCountryMode('include')}
- const handleFile=async file=>{setLoading(true);try{const d=await readFile(file);setSource(d);clearFilters();setTab('overview');setCountryQuery('');setPspQuery('');setNotice(`Loaded ${file.name}`)}catch(e){setNotice(e.message==='RAW_FILE'?'This file does not contain the required transaction columns (merchantOrderId, pspName, status, amount).':'Could not read this file. Please upload a transaction CSV/Excel report.')}finally{setLoading(false);setTimeout(()=>setNotice(''),4500)}}
+ const handleFile=async file=>{setLoading(true);setLoadProgress(0);setLoadRows(0);const mb=file.size/1024/1024;try{if(mb>=100&&!file.name.toLowerCase().endsWith('.csv')){setNotice(`This Excel file is ${mb.toFixed(0)} MB. Large Excel workbooks can exceed browser memory. Please export it as CSV for large-file mode.`);return}const d=await readFile(file,(p,r)=>{setLoadProgress(p);setLoadRows(r)});setSource(d);clearFilters();setTab('overview');setCountryQuery('');setPspQuery('');setNotice(`Loaded ${file.name} · ${num(d.rawObjects?.length||0)} rows`)}catch(e){setNotice(e.message==='RAW_FILE'?'This file does not contain the required transaction columns (merchantOrderId, pspName, status, amount).':e.message||'Could not read this file.')}finally{setLoading(false);setTimeout(()=>setNotice(''),6000)}}
  const currentKpi=data?.kpis?.[approvalMode==='with'?0:1],withoutIndia=data?.kpis?.[approvalMode==='with'?2:3]
  const countries=useMemo(()=>{if(!data)return[];let a=[...data.countries];if(countryQuery){const q=countryQuery.toLowerCase();a=a.filter(x=>`${x.country} ${x.code} ${x.topReason} ${x.topPsp}`.toLowerCase().includes(q))}if(countryPsp!=='All')a=a.filter(x=>x.topPsp===countryPsp);return a},[data,countryQuery,countryPsp])
  const pspRows=useMemo(()=>{if(!data)return[];let a=data.pspWise.filter(x=>x.attempts>=pspMin);if(pspQuery){const q=pspQuery.toLowerCase();a=a.filter(x=>`${x.psp} ${x.source} ${x.topReason}`.toLowerCase().includes(q))}return [...a].sort((a,b)=>(b.approval??-1)-(a.approval??-1))},[data,pspQuery,pspMin])
@@ -453,7 +503,7 @@ function App(){
    XLSX.writeFile(wb,`FundedNext_Approval_Analysis_${timezone.replace('+','plus').replace('-','minus')}_${new Date().toISOString().slice(0,10)}.xlsx`)
  }
 
- if(!data)return <div className="landing"><div className="landing-top"><div className="brand"><div className="brand-mark">FN</div><div><div className="brand-title">FundedNext</div><div className="brand-sub">Approval Ratio Analysis</div></div></div></div><main className="landing-content"><div className="welcome-icon">▤</div><h1>Welcome to Approval Ratio Analytics</h1><p>Upload your transaction data to unlock powerful approval, revenue, country and PSP insights.</p><UploadBox onFile={handleFile}/>{loading&&<div className="loading">Processing your transaction file…</div>}<div className="landing-note"><b>Calculation rules</b><span>Country approval uses unique merchantOrderId.</span><span>PSP approval uses individual attempts — no merchantOrderId deduplication.</span><span>Countries are ranked by approved revenue and the full country list is available.</span><span>Analysis timezone defaults to GMT+0 and can be changed after upload.</span></div></main>{notice&&<div className="notice">{notice}</div>}</div>
+ if(!data)return <div className="landing"><div className="landing-top"><div className="brand"><div className="brand-mark">FN</div><div><div className="brand-title">FundedNext</div><div className="brand-sub">Approval Ratio Analysis</div></div></div></div><main className="landing-content"><div className="welcome-icon">▤</div><h1>Welcome to Approval Ratio Analytics</h1><p>Upload your transaction data to unlock powerful approval, revenue, country and PSP insights.</p><UploadBox onFile={handleFile}/>{loading&&<div className="loading">Processing transaction file… {loadProgress>0?`${loadProgress}% · ${num(loadRows)} rows`:''}<div className="progress-track"><div className="progress-fill" style={{width:`${loadProgress}%`}}/></div></div>}<div className="landing-note"><b>Calculation rules</b><span>Country approval uses unique merchantOrderId.</span><span>PSP approval uses individual attempts — no merchantOrderId deduplication.</span><span>Countries are ranked by approved revenue and the full country list is available.</span><span>Analysis timezone defaults to GMT+0 and can be changed after upload.</span><span>For very large reports, CSV is recommended; large Excel workbooks may exceed browser memory.</span></div></main>{notice&&<div className="notice">{notice}</div>}</div>
 
  return <div className="app-shell"><header className="topbar"><div className="brand"><div className="brand-mark">FN</div><div><div className="brand-title">FundedNext</div><div className="brand-sub">Approval Ratio Analysis</div></div></div><div className="header-actions"><span className="period-chip">{data.period}</span><button className="download-btn" onClick={downloadFullExcel}>Download Full Excel</button><label className="upload-btn">Upload New Data<input type="file" accept=".csv,.xlsx,.xls" onChange={e=>{const f=e.target.files?.[0];if(f)handleFile(f)}}/></label></div></header><div className="layout"><aside className="sidebar">
  {source?.filterable&&<div className="filters-panel"><div className="filters-head"><div><div className="eyebrow light">FILTERS</div><h3>Transaction Filters</h3></div>{activeFilterCount>0&&<button className="clear-btn" onClick={clearFilters}>Clear</button>}</div>
