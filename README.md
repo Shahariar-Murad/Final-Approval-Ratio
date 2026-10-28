@@ -1,11 +1,11 @@
 # FundedNext Approval Ratio Dashboard
 
-A React + Vite dashboard for the FundedNext approval-ratio analysis.
+A React + Vite upload-first dashboard for FundedNext approval-ratio analysis. The dashboard starts empty and calculates the analysis from the transaction file you upload.
 
 ## Included
 - Executive KPI dashboard
 - With Hard Decline / Without Hard Decline switch
-- Top 50 countries
+- Full country list ranked by approved revenue
 - Cascaded country approval ratio using unique `merchantOrderId`
 - Attempt-level PSP approval ratio (no `merchantOrderId` deduplication)
 - Top-performing PSP by country
@@ -14,7 +14,8 @@ A React + Vite dashboard for the FundedNext approval-ratio analysis.
 - Methodology page
 - Full Excel export containing Executive Summary, Top 50 Countries, PSP Wise, Hard Soft Declines, Mapping Rules, Methodology, and Report Notes
 - CSV export for country and PSP tables
-- Client-side Excel upload for future analysis workbooks with the same sheet structure
+- Upload-first landing page with drag-and-drop CSV/XLSX/XLS transaction upload
+- Client-side parsing of raw transaction reports and compatible analysis workbooks
 
 ## Netlify / GitHub
 1. Push this entire folder to a GitHub repository.
@@ -36,3 +37,12 @@ No server or database is required. The dashboard runs entirely in the browser.
 - Payabl-India = Innatech, India.
 - PayPal-Global = PayPal, non-India.
 - Paypal-India = PayPal, India.
+
+## Interactive filters
+After uploading a transaction file, the left filter panel supports:
+- Date Range in GMT+3 (source transaction timestamps are treated as GMT+0 and shifted +3 hours)
+- PSP multi-select with Include / Exclude modes
+- MID Alias multi-select with Include / Exclude modes
+- Country multi-select with Include / Exclude modes
+- Select All / clear selections and removable selection chips
+All dashboard KPIs, revenue, approval ratios, decline analysis, country ranking, PSP analysis and Excel export reflect the active filters.
