@@ -381,18 +381,39 @@ function UploadBox({onFile}){const ref=useRef();const [drag,setDrag]=useState(fa
 
 function MultiSelectFilter({title,icon,options,selected,setSelected,mode,setMode,placeholder}){
   const [open,setOpen]=useState(false)
+  const [query,setQuery]=useState('')
   const allSelected=selected.length===0
   const toggle=(value)=>setSelected(selected.includes(value)?selected.filter(x=>x!==value):[...selected,value])
   const selectAll=()=>setSelected([])
+  const normalizedQuery=query.trim().toLowerCase()
+  const visibleOptions=normalizedQuery
+    ? options.filter(v=>String(v).toLowerCase().includes(normalizedQuery))
+    : options
+  const searchLabel=title==='Country'?'Search country...':title==='PSP'?'Search PSP...':title==='MID Alias'?'Search MID alias...':`Search ${title.toLowerCase()}...`
   return <div className="filter-group">
     <div className="filter-title"><span className="filter-icon">{icon}</span><span>{title} ({selected.length})</span></div>
     <div className="filter-mode"><button className={mode==='include'?'active':''} onClick={()=>setMode('include')}>Include</button><button className={mode==='exclude'?'active':''} onClick={()=>setMode('exclude')}>Exclude</button></div>
     <div className={`multi-select ${open?'open':''}`}>
       <button className="multi-trigger" onClick={()=>setOpen(v=>!v)}><span>{allSelected?placeholder:`${selected.length} selected`}</span><span>⌄</span></button>
       {open&&<div className="multi-menu">
+        <div className="multi-search-wrap">
+          <input
+            className="multi-search"
+            type="search"
+            value={query}
+            onChange={e=>setQuery(e.target.value)}
+            onClick={e=>e.stopPropagation()}
+            onKeyDown={e=>e.stopPropagation()}
+            placeholder={searchLabel}
+            autoFocus
+          />
+          {query && <button className="multi-search-clear" aria-label="Clear search" onClick={()=>setQuery('')}>×</button>}
+        </div>
         <button className={`multi-option select-all ${allSelected?'checked':''}`} onClick={selectAll}><span className="check">{allSelected?'✓':''}</span>Select All</button>
         <div className="multi-divider"/>
-        {options.map(v=><button key={v} className={`multi-option ${selected.includes(v)?'checked':''}`} onClick={()=>toggle(v)}><span className="check">{selected.includes(v)?'✓':''}</span>{v}</button>)}
+        {visibleOptions.length>0
+          ? visibleOptions.map(v=><button key={v} className={`multi-option ${selected.includes(v)?'checked':''}`} onClick={()=>toggle(v)}><span className="check">{selected.includes(v)?'✓':''}</span>{v}</button>)
+          : <div className="multi-no-results">No matching {title.toLowerCase()} found.</div>}
       </div>}
     </div>
     {selected.length>0&&<div className="selection-chips">{selected.map(v=><span className="selection-chip" key={v}>{v}<button onClick={()=>toggle(v)}>×</button></span>)}</div>}
@@ -431,7 +452,39 @@ function App(){
  const currentKpi=data?.kpis?.[approvalMode==='with'?0:1],withoutIndia=data?.kpis?.[approvalMode==='with'?2:3]
  const countries=useMemo(()=>{if(!data)return[];let a=[...data.countries];if(countryQuery){const q=countryQuery.toLowerCase();a=a.filter(x=>`${x.country} ${x.code} ${x.topReason} ${x.topPsp}`.toLowerCase().includes(q))}if(countryPsp!=='All')a=a.filter(x=>x.topPsp===countryPsp);return a},[data,countryQuery,countryPsp])
  const pspRows=useMemo(()=>{if(!data)return[];let a=data.pspWise.filter(x=>x.attempts>=pspMin);if(pspQuery){const q=pspQuery.toLowerCase();a=a.filter(x=>`${x.psp} ${x.source} ${x.topReason}`.toLowerCase().includes(q))}return [...a].sort((a,b)=>(b.approval??-1)-(a.approval??-1))},[data,pspQuery,pspMin])
- const declineRows=useMemo(()=>{if(!data)return[];let a=[...data.taxonomy];if(declineType!=='All')a=a.filter(x=>x.type===declineType);if(declineQuery)a=a.filter(x=>x.reason.toLowerCase().includes(declineQuery.toLowerCase()));return a.sort((a,b)=>b.count-a.count)},[data,declineType,declineQuery])
+ const declineRows=useMemo(()=>{
+   if(!data)return[]
+   // Rebuild the decline taxonomy directly from the currently filtered raw attempts.
+   // This prevents the Hard/Soft page from accidentally displaying the unfiltered
+   // global taxonomy when a Country/PSP/MID/Date filter is active.
+   const baseRows=source?.filterable && Array.isArray(source.rawObjects)
+     ? applyRawFilters(source.rawObjects,filters)
+     : null
+   const counts={}
+   if(baseRows){
+     for(const x of baseRows){
+       if(x.status!=='declined')continue
+       const inf=reasonInfo(x.declineReason)
+       if(!inf)continue
+       const key=inf.reason+'||'+inf.type
+       counts[key]=(counts[key]||0)+1
+     }
+   }
+   let a=baseRows
+     ? Object.entries(counts).map(([k,count])=>{const [reason,type]=k.split('||');return {reason,type,count}})
+     : [...data.taxonomy]
+   if(declineType!=='All')a=a.filter(x=>x.type===declineType)
+   if(declineQuery)a=a.filter(x=>x.reason.toLowerCase().includes(declineQuery.toLowerCase()))
+   return a.sort((a,b)=>b.count-a.count)
+ },[data,source,filters,declineType,declineQuery])
+ const declineScope=useMemo(()=>{
+   const parts=[]
+   if(countrySelected.length)parts.push(`${countryMode==='exclude'?'Excluding':'Including'} ${countrySelected.join(', ')}`)
+   if(pspSelected.length)parts.push(`${pspMode==='exclude'?'Excluding':'Including'} PSP: ${pspSelected.join(', ')}`)
+   if(midSelected.length)parts.push(`${midMode==='exclude'?'Excluding':'Including'} MID: ${midSelected.join(', ')}`)
+   if(startDate||endDate)parts.push(`${startDate||'start'} → ${endDate||'end'}`)
+   return parts.length?parts.join(' · '):'All transaction data'
+ },[countrySelected,countryMode,pspSelected,pspMode,midSelected,midMode,startDate,endDate])
  const topCountries=useMemo(()=>data?[...data.countries].slice(0,10):[],[data])
  const topPsps=useMemo(()=>data?[...data.pspWise].filter(x=>x.attempts>=pspMin).sort((a,b)=>(b.approval??-1)-(a.approval??-1)).slice(0,10):[],[data,pspMin])
  const pspOptions=data?['All',...Array.from(new Set(data.countries.map(x=>x.topPsp))).filter(Boolean).sort()]:[]
@@ -518,7 +571,7 @@ function App(){
  {tab==='overview'&&<><section className="hero"><div><div className="eyebrow">EXECUTIVE VIEW</div><h1>Approval & Decline Performance</h1><p>Country metrics are cascaded; PSP metrics are attempt-based. Countries are ranked by approved revenue.</p></div><div className="segmented"><button className={approvalMode==='with'?'selected':''} onClick={()=>setApprovalMode('with')}>With Hard Decline</button><button className={approvalMode==='without'?'selected':''} onClick={()=>setApprovalMode('without')}>Without Hard Decline</button></div></section><div className="kpi-grid"><KpiCard label={approvalMode==='with'?'Cascaded Approval Ratio':'Approval Ratio without Hard Decline'} value={pct(currentKpi['Displayed Approval Ratio'])} sub={`${num(currentKpi.Count)} unique merchant orders`} tone="blue"/><KpiCard label="Without India" value={pct(withoutIndia['Displayed Approval Ratio'])} sub="Cascaded country scenario" tone="purple"/><KpiCard label="Revenue" value={money(currentKpi['Revenue (USD)'])} sub="Approved transaction revenue" tone="green"/><KpiCard label="Approved" value={num(currentKpi.Approved)} sub={`${num(currentKpi.Declined)} declined`} tone="amber"/><KpiCard label="Hard Declines" value={num(currentKpi['Hard Declines'])} sub={pct(currentKpi['Hard Decline %'])+' of classified declines'} tone="red"/><KpiCard label="Top Decline Reason" value={currentKpi['Top Declined Reason']} sub="Highest-volume classified reason" tone="slate"/></div><section className="grid-2"><div className="panel"><div className="panel-head"><div><h2>Top Countries by Revenue</h2><p>Top 10 from the full country list</p></div></div>{topCountries.map(c=><RatioBar key={c.code} label={`${c.rank}. ${c.country}`} value={c.amount/(data.countries[0]?.amount||1)} accent="green"/>)} </div><div className="panel"><div className="panel-head"><div><h2>PSP Approval</h2><p>Attempt-based · minimum {pspMin} attempts</p></div></div>{topPsps.map(p=><RatioBar key={p.psp} label={p.psp} value={p.approval} accent={(p.approval??0)>=.75?'green':(p.approval??0)>=.5?'blue':'red'}/>)}</div></section><section className="grid-2"><div className="panel"><div className="panel-head"><div><h2>Decline Mix</h2><p>Terminal declined unique orders</p></div></div><div className="donut-wrap"><div className="donut" style={{'--hard':`${clamp(currentKpi['Hard Decline %'])}%`}}><div><b>{pct(currentKpi['Hard Decline %'])}</b><span>hard</span></div></div><div className="legend"><div><i className="dot hard"></i>Hard declines <b>{num(currentKpi['Hard Declines'])}</b></div><div><i className="dot soft"></i>Soft declines <b>{num(currentKpi['Soft Declines'])}</b></div></div></div></div><div className="panel"><div className="panel-head"><div><h2>Scenario Comparison</h2><p>All countries and without India</p></div></div><RatioBar label="All countries · with hard decline" value={data.kpis[0]['Displayed Approval Ratio']}/><RatioBar label="All countries · without hard decline" value={data.kpis[1]['Displayed Approval Ratio']} accent="green"/><RatioBar label="Without India · with hard decline" value={data.kpis[2]['Displayed Approval Ratio']} accent="purple"/><RatioBar label="Without India · without hard decline" value={data.kpis[3]['Displayed Approval Ratio']} accent="green"/></div></section></>}
  {tab==='countries'&&<section><div className="hero compact"><div><div className="eyebrow">COUNTRY PERFORMANCE</div><h1>All Countries — Revenue Ranked</h1><p>Full country list, ranked by approved revenue. Approval is cascaded using unique merchantOrderId.</p></div></div><div className="toolbar"><div className="segmented"><button className={approvalMode==='with'?'selected':''} onClick={()=>setApprovalMode('with')}>With Hard Decline</button><button className={approvalMode==='without'?'selected':''} onClick={()=>setApprovalMode('without')}>Without Hard Decline</button></div><input className="search" placeholder="Search country, code, PSP or decline reason..." value={countryQuery} onChange={e=>setCountryQuery(e.target.value)}/><select value={countryPsp} onChange={e=>setCountryPsp(e.target.value)}>{pspOptions.map(x=><option key={x}>{x}</option>)}</select></div><div className="panel table-panel"><table><thead><tr><th>Revenue Rank</th><th>Country</th><th>Revenue</th><th>Orders</th><th>Approval</th><th>Without Hard</th><th>Hard %</th><th>Soft %</th><th>Top Decline</th><th>Top PSP</th><th>PSP AR</th><th>PSP Count</th></tr></thead><tbody>{countries.map(c=><tr key={`${c.code}-${c.rank}`}><td><b>{c.rank}</b></td><td><b>{c.country}</b><span className="muted">{c.code}</span></td><td><b>{money(c.amount)}</b></td><td>{num(c.count)}</td><td><span className={`pill ${c.approval>=.8?'good':c.approval>=.6?'mid':'bad'}`}>{pct(approvalMode==='with'?c.approval:c.approvalWithoutHard)}</span></td><td>{pct(c.approvalWithoutHard)}</td><td>{pct(c.hardPct)}</td><td>{pct(c.softPct)}</td><td>{c.topReason}</td><td>{c.topPsp}</td><td>{pct(c.topPspApproval)}</td><td>{num(c.topPspCount)}</td></tr>)}</tbody></table></div></section>}
  {tab==='psps'&&<section><div className="hero compact"><div><div className="eyebrow">PSP PERFORMANCE</div><h1>Attempt-Level PSP Analysis</h1><p>PSP approval ratio does <b>not</b> deduplicate merchantOrderId.</p></div></div><div className="toolbar"><input className="search" placeholder="Search PSP, source mapping or decline reason..." value={pspQuery} onChange={e=>setPspQuery(e.target.value)}/><select value={pspMin} onChange={e=>setPspMin(Number(e.target.value))}><option value="0">All attempts</option><option value="20">20+ attempts</option><option value="100">100+ attempts</option><option value="500">500+ attempts</option></select></div><div className="panel table-panel"><table><thead><tr><th>PSP</th><th>Source Mapping</th><th>Attempts</th><th>Approved</th><th>Declined</th><th>Approval</th><th>Without Hard</th><th>Revenue</th><th>Hard</th><th>Soft</th><th>Unclassified</th><th>Top Reason</th></tr></thead><tbody>{pspRows.map(p=><tr key={p.psp}><td><b>{p.psp}</b></td><td className="muted">{p.source}</td><td>{num(p.attempts)}</td><td>{num(p.approved)}</td><td>{num(p.declined)}</td><td><span className={`pill ${(p.approval??0)>=.75?'good':(p.approval??0)>=.5?'mid':'bad'}`}>{pct(p.approval)}</span></td><td>{pct(p.approvalWithoutHard)}</td><td>{money(p.revenue)}</td><td>{num(p.hard)}</td><td>{num(p.soft)}</td><td>{num(p.unclassified)}</td><td>{p.topReason}</td></tr>)}</tbody></table></div></section>}
- {tab==='declines'&&<section><div className="hero compact"><div><div className="eyebrow">DECLINE TAXONOMY</div><h1>Hard & Soft Declines</h1><p>Standardized list derived from the uploaded transaction decline reasons.</p></div></div><div className="toolbar"><div className="segmented"><button className={declineType==='All'?'selected':''} onClick={()=>setDeclineType('All')}>All</button><button className={declineType==='Hard'?'selected':''} onClick={()=>setDeclineType('Hard')}>Hard</button><button className={declineType==='Soft'?'selected':''} onClick={()=>setDeclineType('Soft')}>Soft</button></div><input className="search" placeholder="Search decline reason..." value={declineQuery} onChange={e=>setDeclineQuery(e.target.value)}/></div><div className="decline-grid">{['Hard','Soft'].filter(t=>declineType==='All'||declineType===t).map(type=>{const list=declineRows.filter(x=>x.type===type);const total=list.reduce((s,x)=>s+x.count,0);return <div className="panel" key={type}><div className="panel-head"><div><h2>{type} Declines</h2><p>{list.length} reasons · {num(total)} mapped declined attempts</p></div></div>{list.map((x,i)=><div className="decline-row" key={`${type}-${x.reason}-${i}`}><div><b>{x.reason}</b><span>{x.type}</span></div><strong>{num(x.count)}</strong></div>)}</div>})}</div></section>}
+ {tab==='declines'&&<section><div className="hero compact"><div><div className="eyebrow">DECLINE TAXONOMY</div><h1>Hard & Soft Declines</h1><p>Standardized list derived from the uploaded transaction decline reasons. <b>Current scope: {declineScope}</b></p></div></div><div className="toolbar"><div className="segmented"><button className={declineType==='All'?'selected':''} onClick={()=>setDeclineType('All')}>All</button><button className={declineType==='Hard'?'selected':''} onClick={()=>setDeclineType('Hard')}>Hard</button><button className={declineType==='Soft'?'selected':''} onClick={()=>setDeclineType('Soft')}>Soft</button></div><input className="search" placeholder="Search decline reason..." value={declineQuery} onChange={e=>setDeclineQuery(e.target.value)}/></div><div className="decline-grid">{['Hard','Soft'].filter(t=>declineType==='All'||declineType===t).map(type=>{const list=declineRows.filter(x=>x.type===type);const total=list.reduce((s,x)=>s+x.count,0);return <div className="panel" key={type}><div className="panel-head"><div><h2>{type} Declines</h2><p>{list.length} reasons · {num(total)} mapped declined attempts</p></div></div>{list.map((x,i)=><div className="decline-row" key={`${type}-${x.reason}-${i}`}><div><b>{x.reason}</b><span>{x.type}</span></div><strong>{num(x.count)}</strong></div>)}</div>})}</div></section>}
  {tab==='mapping'&&<section><div className="hero compact"><div><div className="eyebrow">DATA NORMALIZATION</div><h1>PSP Mapping Rules</h1><p>Labels used in the dashboard and Excel export.</p></div></div><div className="panel table-panel"><table><thead><tr><th>Source PSP</th><th>Dashboard PSP</th><th>Country Scope</th><th>Rule</th></tr></thead><tbody>{data.mappingRules.map((m,i)=><tr key={i}><td><b>{m.source}</b></td><td>{m.dashboard}</td><td>{m.scope}</td><td>{m.rule}</td></tr>)}</tbody></table></div></section>}
  {tab==='methodology'&&<section><div className="hero compact"><div><div className="eyebrow">DEFINITIONS</div><h1>Methodology</h1><p>Country/cascaded and PSP calculations intentionally use different transaction keys.</p></div></div><div className="method-grid">{data.methodology.map((m,i)=><div className="panel method-card" key={i}><div className="eyebrow">{m.metric}</div><h3>{m.definition}</h3><p>{m.note}</p></div>)}</div></section>}
  </main></div></div>
