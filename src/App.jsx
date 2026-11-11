@@ -25,6 +25,8 @@ const PSP_RULES = [
   ['Paystra','Axcess-Paystrax','All countries','Source pspName = Paystra; represented as Axcess-Paystrax on BridgerPay.'],
   ['TrustPayments','Trust Payment','All countries','All TrustPayments transactions are reported under Trust Payment.'],
   ['Paysafe','Paysafe','All countries','All Paysafe transactions are reported under Paysafe.'],
+  ['ApplePayViaPayabl','Apple Pay via Payabl','All countries','Source pspName = ApplePayViaPayabl.'],
+  ['GooglePayViaPayabl','Google Pay via Payabl','All countries','Source pspName = GooglePayViaPayabl.'],
 ]
 
 const pct = v => v == null || Number.isNaN(Number(v)) ? '—' : `${(Number(v)*100).toFixed(2)}%`
@@ -91,6 +93,8 @@ function mapSpecificPsp(psp,country,midAlias){
   if(p==='Paystra') return 'Axcess-Paystrax'
   if(p==='TrustPayments') return 'Trust Payment'
   if(p==='Paysafe') return 'Paysafe'
+  if(p==='ApplePayViaPayabl') return 'Apple Pay via Payabl'
+  if(p==='GooglePayViaPayabl') return 'Google Pay via Payabl'
   return p || 'Unknown'
 }
 function rawRowsToObjects(rows){
@@ -263,7 +267,8 @@ function buildFromObjects(parsed,fileName='Transaction Data',filterConfig=null){
   def.push(pspSubset('PayPal-Global',x=>x.pspName==='PayPal'&&!isIndiaCountry(x.country),'PayPal (non-India)'))
   def.push(pspSubset('Paypal-India',x=>x.pspName==='PayPal'&&isIndiaCountry(x.country),'PayPal (India)'))
   def.push(pspSubset('Trust Payment',sourceFilter('TrustPayments'),'TrustPayments'))
-  def.push(...['Apple Pay via Payabl','Google Pay via Payabl'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,dataQuality:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
+  def.push(pspSubset('Apple Pay via Payabl',sourceFilter('ApplePayViaPayabl'),'ApplePayViaPayabl'))
+  def.push(pspSubset('Google Pay via Payabl',sourceFilter('GooglePayViaPayabl'),'GooglePayViaPayabl'))
 
   const taxonomy={}
   for(const x of r.filter(x=>x.status==='declined')){const inf=reasonInfo(x.declineReason, x.declineCode);if(inf){const k=inf.reason+'||'+inf.type;taxonomy[k]=(taxonomy[k]||0)+1}}
@@ -277,6 +282,8 @@ function buildFromObjects(parsed,fileName='Transaction Data',filterConfig=null){
     {metric:'Approval Ratio without Hard Decline',definition:'Approved / (Approved + Soft Declines)',note:'Hard terminal declines removed from denominator.'},
     {metric:'PSP Approval Ratio',definition:'Approved PSP attempts / (Approved + Declined PSP attempts)',note:'PSP calculation does NOT deduplicate merchantOrderId.'},
     {metric:'Axcess mapping',definition:'Axcess = Axcess-Truevo + Axcess-Paystrax',note:'Source pspName Axcess is reported as Axcess-Truevo; source pspName Paystra is reported as Axcess-Paystrax. The combined Axcess row includes both.'},
+    {metric:'Apple / Google Pay via Payabl mapping',definition:'Source pspName ApplePayViaPayabl / GooglePayViaPayabl',note:'These source PSP names are reported as Apple Pay via Payabl / Google Pay via Payabl and are included as real PSP rows when present.'},
+    {metric:'Customer Cancellation',definition:'Customer/cardholder explicitly canceled or aborted the payment',note:'Classified as a Hard Decline. Risk-management cancellations and 3DS authentication cancellations remain under their more specific categories.'},
     {metric:'Revenue',definition:'Sum of approved transaction amounts',note:'Reported by country and PSP.'},
     {metric:'Top Country ranking',definition:'Countries ranked by approved revenue',note:'Full country list is available; no Top-50 limit.'},
     {metric:'Top Performing PSP',definition:'Highest attempt-based PSP approval ratio in the country',note:'Minimum 20 attempts where available; otherwise best available PSP.'},

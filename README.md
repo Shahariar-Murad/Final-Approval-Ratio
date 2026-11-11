@@ -86,3 +86,10 @@ All dashboard KPIs, revenue, approval ratios, decline analysis, country ranking,
 - Source `pspName = Axcess` → dashboard `Axcess-Truevo`
 - Source `pspName = Paystra` → dashboard `Axcess-Paystrax`
 - The combined `Axcess` row includes both source groups.
+
+
+### V11 fixes
+- Customer Cancellation / Cardholder Block is classified as a Hard Decline.
+- Source `ApplePayViaPayabl` is mapped to **Apple Pay via Payabl** and included in PSP analysis/export.
+- Source `GooglePayViaPayabl` is mapped to **Google Pay via Payabl** and included when present.
+- Risk-management cancellations and 3DS authentication cancellations remain under their specific categories.

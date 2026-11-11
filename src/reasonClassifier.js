@@ -16,9 +16,11 @@ export function reasonInfo(rawReason, rawCode = '') {
     return { reason: 'Data Quality / Status Inconsistency', type: 'Data Quality' }
   }
 
-  // Customer / cardholder actions.
-  if (/canceled by the user|cancelled by customer|cancelled by user|payment aborted by customer|blocked by cardholder|cardholder\/contact cardholder/.test(text)) {
-    return { reason: 'Customer Cancellation / Cardholder Block', type: 'Soft' }
+  // Customer / cardholder actions. These are treated as HARD declines per the agreed taxonomy.
+  // Keep risk-management cancellations and authentication cancellations on their more
+  // specific Fraud/Risk or 3DS rules below.
+  if (/transaction has been canceled by the user|transaction has been cancelled by the user|cancelled by customer|cancelled by user|canceled by customer|canceled by user|payment aborted by customer|blocked by cardholder|cardholder\/contact cardholder/.test(text)) {
+    return { reason: 'Customer Cancellation / Cardholder Block', type: 'Hard' }
   }
 
   // 3DS / authentication.
@@ -153,7 +155,7 @@ export function reasonInfo(rawReason, rawCode = '') {
     '79': ['Retry / Reattempt Issue', 'Soft'], '9g': ['Blocked / Restricted Card', 'Soft'], 'n7': ['CVV / Card Verification', 'Hard'], '6p': ['Verification Data Failed', 'Hard'],
     '75': ['Limit / Frequency Exceeded', 'Hard'], '78': ['Account / Registration Issue', 'Hard'], '76': ['Account / Registration Issue', 'Hard'],
     '31': ['Credit Card Company Issue', 'Hard'], '41': ['Lost / Stolen Card', 'Hard'], '43': ['Lost / Stolen Card', 'Hard'],
-    '17': ['Customer Cancellation / Cardholder Block', 'Soft'], '30': ['Validation / Data Error', 'Hard'],
+    '17': ['Customer Cancellation / Cardholder Block', 'Hard'], '30': ['Validation / Data Error', 'Hard'],
     '80': ['System / Gateway / PSP Error', 'Soft'], '81': ['Cryptographic / PIN Error', 'Hard'], '85': ['System / Gateway / PSP Error', 'Soft'],
     '0': ['Generic / Unspecified Decline', 'Hard'], '422': ['Generic / Unspecified Decline', 'Hard']
   }
