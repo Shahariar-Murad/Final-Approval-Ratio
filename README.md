@@ -65,3 +65,18 @@ All dashboard KPIs, revenue, approval ratios, decline analysis, country ranking,
 ## Large-file handling
 - CSV files use Papa Parse streaming + Web Worker mode, so large CSV reports can be processed without loading the entire file into an XLSX workbook object.
 - Large Excel workbooks (100 MB+) are intentionally rejected in the browser because XLSX parsing requires the workbook to be buffered in memory. Convert very large Excel reports to CSV for streaming mode.
+
+
+## Decline reason methodology (v9)
+- Decline reasons are analyzed at individual declined-attempt level for country and PSP reason reporting.
+- Approval ratio remains cascaded/unique `merchantOrderId` at country level.
+- Reason classification checks specific semantics first (3DS, AVS, CVV, fraud/risk, BIN/card restrictions, validation, system/gateway, issuer, etc.), then uses decline-code fallbacks.
+- `Insufficient Fund` is assigned only when the raw reason explicitly indicates insufficient funds or a matching funding code is present; generic issuer/system messages are not converted into insufficient funds.
+- `Risk Management department` is classified as **Risk Management Check — Soft**, not Card Issue.
+- AVS/billing-address failures are classified separately as **AVS / Billing Verification — Soft**.
+- `transaction declined (suspecting manipulation)` and anti-fraud responses are **Fraud / Risk Screening — Soft**.
+- BIN/banned/restricted-card rules are **Blocked / Restricted Card — Soft**.
+- System/gateway/PSP errors are **System / Gateway / PSP Error — Soft**.
+- Validation and malformed request errors are **Validation / Data Error — Hard**.
+- Declined rows whose reason says `Approved or completed Successfully` are flagged as **Data Quality / Status Inconsistency**, not forced into Hard or Soft.
+- The dashboard includes a **Decline Mapping** audit page and a full Excel `Decline Mapping Audit` sheet.

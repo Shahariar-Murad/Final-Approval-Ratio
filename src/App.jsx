@@ -1,8 +1,8 @@
 import React, { useMemo, useRef, useState } from 'react'
 import * as XLSX from 'xlsx-js-style'
 import Papa from 'papaparse'
-import { REASON_MAP } from './reasonMap'
 import { COUNTRY_NAMES, COUNTRY_CODES } from './countryMeta'
+import { reasonInfo } from './reasonClassifier'
 
 const PSP_ORDER = [
   'Nuvei (Safecharge)','Nuvei-AE','Nuvei-EU','Network International','Axcess','Axcess-Truevo','Axcess-Paystrax',
@@ -23,29 +23,6 @@ const PSP_RULES = [
   ['Paystra','Axcess-Paystrax','All countries','All Paystra transactions are reported under Axcess-Paystrax.'],
   ['TrustPayments','Trust Payment','All countries','All TrustPayments transactions are reported under Trust Payment.'],
   ['Paysafe','Paysafe','All countries','All Paysafe transactions are reported under Paysafe.'],
-]
-
-const HARD_FALLBACKS = [
-  ['blocked, first used or special condition','Card Issue (Stolen/ Invalid/ Wrong Card Deatils)','Hard'],
-  ['temporarily blocked','Card Issue (Stolen/ Invalid/ Wrong Card Deatils)','Hard'],
-  ['insufficient funds','Insufficient Fund','Hard'],
-  ['insufficient fund','Insufficient Fund','Hard'],
-  ['do not honor','Do Not Honor','Hard'],
-  ['do not honour','Do Not Honor','Hard'],
-  ['generic decline','Generic Decline','Hard'],
-  ['cancelled by customer','Cancalled by Customer','Hard'],
-  ['canceled by the user','Cancalled by Customer','Hard'],
-  ['payment aborted by customer','Cancalled by Customer','Hard'],
-  ['issuing bank','Issuing Bank Related Issue','Hard'],
-  ['3dsecure verification failed','3DS / Authentication Issue','Soft'],
-  ['3d secure','3DS / Authentication Issue','Soft'],
-  ['suspected fraud','Fraud Issue','Soft'],
-  ['fraud','Fraud Issue','Soft'],
-  ['re-enter transaction','Re-enter Transaction','Soft'],
-  ['risk management','Risk Management Check','Soft'],
-  ['blacklisted bin','Blacklisted BIN','Soft'],
-  ['banned card','Blocked / Banned Card','Soft'],
-  ['security violation','Security Violation Issue','Soft'],
 ]
 
 const pct = v => v == null || Number.isNaN(Number(v)) ? '—' : `${(Number(v)*100).toFixed(2)}%`
@@ -98,14 +75,6 @@ const dateKeyInTimezone = (value, timezone='GMT+0') => {
   return shifted.toISOString().slice(0,10)
 }
 
-function reasonInfo(raw){
-  const s=safe(raw)
-  if(!s) return null
-  if(REASON_MAP[s]) return REASON_MAP[s]
-  const n=normalize(s)
-  for(const [needle,reason,type] of HARD_FALLBACKS){ if(n.includes(needle)) return {reason,type} }
-  return null
-}
 function mapSpecificPsp(psp,country,midAlias){
   const p=safe(psp), c=safe(country).toUpperCase(), mid=safe(midAlias)
   if(p==='CardPay') return 'Unlimit'
@@ -188,26 +157,28 @@ function buildFromObjects(parsed,fileName='Transaction Data',filterConfig=null){
   const ordersMap=new Map()
   for(const x of r){
     let o=ordersMap.get(x.merchantOrderId)
-    if(!o){o={merchantOrderId:x.merchantOrderId,country:x.country||'Unknown',approved:false,revenue:0,attempts:0,firstDeclineReason:'',firstDeclineInfo:null,rows:[]};ordersMap.set(x.merchantOrderId,o)}
+    if(!o){o={merchantOrderId:x.merchantOrderId,country:x.country||'Unknown',approved:false,revenue:0,attempts:0,firstDeclineReason:'',firstDeclineCode:'',firstDeclineInfo:null,rows:[]};ordersMap.set(x.merchantOrderId,o)}
     o.attempts++
     o.rows.push(x)
     if(!o.country || o.country==='Unknown') o.country=x.country||'Unknown'
     if(x.status==='approved'){o.approved=true;o.revenue+=x.amount}
-    if(!o.firstDeclineReason && x.declineReason){o.firstDeclineReason=x.declineReason;o.firstDeclineInfo=reasonInfo(x.declineReason)}
+    if(!o.firstDeclineReason && x.declineReason){o.firstDeclineReason=x.declineReason;o.firstDeclineCode=x.declineCode||'';o.firstDeclineInfo=reasonInfo(x.declineReason, x.declineCode)}
   }
   const orders=[...ordersMap.values()]
   const terminal=orders.filter(o=>!o.approved)
-  for(const o of terminal){ if(!o.firstDeclineInfo) o.firstDeclineInfo=reasonInfo(o.firstDeclineReason) }
+  for(const o of terminal){ if(!o.firstDeclineInfo) o.firstDeclineInfo=reasonInfo(o.firstDeclineReason, o.firstDeclineCode) }
   const hard=terminal.filter(o=>o.firstDeclineInfo?.type==='Hard')
   const soft=terminal.filter(o=>o.firstDeclineInfo?.type==='Soft')
+  const dataQualityOrders=terminal.filter(o=>o.firstDeclineInfo?.type==='Data Quality')
   const approved=orders.filter(o=>o.approved)
   const total=orders.length
   const ar=total?approved.length/total:0
   const arNoHard=(approved.length+soft.length)?approved.length/(approved.length+soft.length):0
   const hardPct=(hard.length+soft.length)?hard.length/(hard.length+soft.length):0
   const softPct=(hard.length+soft.length)?soft.length/(hard.length+soft.length):0
-  const reasonCounts={}; for(const o of terminal){const key=o.firstDeclineInfo?.reason || 'Unclassified'; reasonCounts[key]=(reasonCounts[key]||0)+1}
-  const topReason=Object.entries(reasonCounts).sort((a,b)=>b[1]-a[1])[0]?.[0]||'Unclassified'
+  // Decline-reason analysis is attempt-based. Approval ratio remains unique-order/cascaded.
+  const reasonCounts={}; for(const x of declinedRows){const inf=reasonInfo(x.declineReason,x.declineCode);if(!inf||inf.type==='Data Quality')continue;reasonCounts[inf.reason]=(reasonCounts[inf.reason]||0)+1}
+  const topReason=Object.entries(reasonCounts).sort((a,b)=>b[1]-a[1])[0]?.[0]||'No classified decline'
   const periodDates=r.map(x=>new Date(x.processingDate)).filter(d=>!Number.isNaN(d.getTime()))
   let period='Uploaded transaction period'
   if(periodDates.length){
@@ -224,8 +195,8 @@ function buildFromObjects(parsed,fileName='Transaction Data',filterConfig=null){
   const wiHard=wiTerminal.filter(o=>o.firstDeclineInfo?.type==='Hard'), wiSoft=wiTerminal.filter(o=>o.firstDeclineInfo?.type==='Soft')
   const wiAr=withoutIndiaOrders.length?wiApproved.length/withoutIndiaOrders.length:0
   const wiNoHard=(wiApproved.length+wiSoft.length)?wiApproved.length/(wiApproved.length+wiSoft.length):0
-  const wiReasons={}; for(const o of wiTerminal){const k=o.firstDeclineInfo?.reason||'Unclassified';wiReasons[k]=(wiReasons[k]||0)+1}
-  const wiTop=Object.entries(wiReasons).sort((a,b)=>b[1]-a[1])[0]?.[0]||'Unclassified'
+  const wiReasons={}; for(const x of declinedRows.filter(x=>!isIndiaCountry(x.country))){const inf=reasonInfo(x.declineReason,x.declineCode);if(!inf||inf.type==='Data Quality')continue;wiReasons[inf.reason]=(wiReasons[inf.reason]||0)+1}
+  const wiTop=Object.entries(wiReasons).sort((a,b)=>b[1]-a[1])[0]?.[0]||'No classified decline'
   const wiRevenue=wiApproved.reduce((s,o)=>s+o.revenue,0)
   const kpis=[
     makeKpi('Cascaded approval ratio',ar,allRevenue),
@@ -243,49 +214,54 @@ function buildFromObjects(parsed,fileName='Transaction Data',filterConfig=null){
 
   const countryRecords=[...countryMap.values()].map(g=>{
     const terminalOrders=g.orders.filter(o=>!o.approved)
-    const h=terminalOrders.filter(o=>o.firstDeclineInfo?.type==='Hard').length
-    const s=terminalOrders.filter(o=>o.firstDeclineInfo?.type==='Soft').length
-    const rr={}; terminalOrders.forEach(o=>{const k=o.firstDeclineInfo?.reason||'Unclassified';rr[k]=(rr[k]||0)+1})
-    const tr=Object.entries(rr).sort((a,b)=>b[1]-a[1])[0]?.[0]||'Unclassified'
+    const hOrders=terminalOrders.filter(o=>o.firstDeclineInfo?.type==='Hard').length
+    const sOrders=terminalOrders.filter(o=>o.firstDeclineInfo?.type==='Soft').length
+    const declineAttempts=g.attemptRows.filter(x=>x.status==='declined')
+    const h=declineAttempts.filter(x=>reasonInfo(x.declineReason,x.declineCode)?.type==='Hard').length
+    const s=declineAttempts.filter(x=>reasonInfo(x.declineReason,x.declineCode)?.type==='Soft').length
+    const dq=declineAttempts.filter(x=>reasonInfo(x.declineReason,x.declineCode)?.type==='Data Quality').length
+    const rr={}; declineAttempts.forEach(x=>{const inf=reasonInfo(x.declineReason,x.declineCode);if(!inf||inf.type==='Data Quality')return;rr[inf.reason]=(rr[inf.reason]||0)+1})
+    const tr=Object.entries(rr).sort((a,b)=>b[1]-a[1])[0]?.[0]||'No classified decline'
     const pspGroups=new Map(); for(const x of g.attemptRows){const p=mapSpecificPsp(x.pspName,x.country,x.midAlias);let q=pspGroups.get(p);if(!q)q={psp:p,attempts:0,approved:0,declined:0};q.attempts++;if(x.status==='approved')q.approved++;if(x.status==='declined')q.declined++;pspGroups.set(p,q)}
     let candidates=[...pspGroups.values()].filter(q=>q.attempts>=20)
     if(!candidates.length)candidates=[...pspGroups.values()]
     candidates=candidates.filter(q=>q.approved+q.declined>0).map(q=>({...q,approval:q.approved/(q.approved+q.declined)})).sort((a,b)=>b.approval-a.approval||b.attempts-a.attempts)
     const top=candidates[0]||{psp:'—',approval:null,attempts:0}
-    return {rank:0,country:g.country,code:g.countryCode,amount:g.revenue,count:g.count,approval:g.count?g.approved/g.count:0,approvalWithoutHard:(g.approved+h+s)?g.approved/(g.approved+s):0,hardPct:(h+s)?h/(h+s):0,softPct:(h+s)?s/(h+s):0,topReason:tr,topPsp:top.psp,topPspApproval:top.approval,topPspCount:top.attempts}
+    return {rank:0,country:g.country,code:g.countryCode,amount:g.revenue,count:g.count,approval:g.count?g.approved/g.count:0,approvalWithoutHard:(g.approved+hOrders+sOrders)?g.approved/(g.approved+sOrders):0,hardPct:(hOrders+sOrders)?hOrders/(hOrders+sOrders):0,softPct:(hOrders+sOrders)?sOrders/(hOrders+sOrders):0,dataQualityCount:dq,topReason:tr,topPsp:top.psp,topPspApproval:top.approval,topPspCount:top.attempts}
   }).sort((a,b)=>b.amount-a.amount||b.count-a.count).map((x,i)=>({...x,rank:i+1}))
 
   const pspDefs=[]
   const pspSubset=(label, filter, source)=>{
     const g=r.filter(filter); const at=g.length, ap=g.filter(x=>x.status==='approved').length, de=g.filter(x=>x.status==='declined').length, other=at-ap-de
     const revenue=g.filter(x=>x.status==='approved').reduce((s,x)=>s+x.amount,0)
-    const hardC=g.filter(x=>x.status==='declined' && reasonInfo(x.declineReason)?.type==='Hard').length
-    const softC=g.filter(x=>x.status==='declined' && reasonInfo(x.declineReason)?.type==='Soft').length
-    const unC=Math.max(0,de-hardC-softC); const rc={}; g.filter(x=>x.status==='declined').forEach(x=>{const inf=reasonInfo(x.declineReason);if(inf)rc[inf.reason]=(rc[inf.reason]||0)+1})
-    const tr=Object.entries(rc).sort((a,b)=>b[1]-a[1])[0]?.[0]||'Unclassified'
-    return {psp:label,source,attempts:at,approved:ap,declined:de,pendingOther:other,approval:(ap+de)?ap/(ap+de):null,approvalWithoutHard:(ap+softC)?ap/(ap+softC):null,revenue,hard:hardC,soft:softC,unclassified:unC,hardPct:(hardC+softC)?hardC/(hardC+softC):null,softPct:(hardC+softC)?softC/(hardC+softC):null,topReason:tr,topCount:rc[tr]||0}
+    const hardC=g.filter(x=>x.status==='declined' && reasonInfo(x.declineReason, x.declineCode)?.type==='Hard').length
+    const softC=g.filter(x=>x.status==='declined' && reasonInfo(x.declineReason, x.declineCode)?.type==='Soft').length
+    const dqC=g.filter(x=>x.status==='declined' && reasonInfo(x.declineReason, x.declineCode)?.type==='Data Quality').length
+    const unC=Math.max(0,de-hardC-softC-dqC); const rc={}; g.filter(x=>x.status==='declined').forEach(x=>{const inf=reasonInfo(x.declineReason, x.declineCode);if(inf && inf.type!=='Data Quality')rc[inf.reason]=(rc[inf.reason]||0)+1})
+    const tr=Object.entries(rc).sort((a,b)=>b[1]-a[1])[0]?.[0]||'No classified decline'
+    return {psp:label,source,attempts:at,approved:ap,declined:de,pendingOther:other,approval:(ap+de)?ap/(ap+de):null,approvalWithoutHard:(ap+softC)?ap/(ap+softC):null,revenue,hard:hardC,soft:softC,dataQuality:dqC,unclassified:unC,hardPct:(hardC+softC)?hardC/(hardC+softC):null,softPct:(hardC+softC)?softC/(hardC+softC):null,topReason:tr,topCount:rc[tr]||0}
   }
   const sourceFilter=(p)=>x=>x.pspName===p
   const def=[]
   def.push(pspSubset('Nuvei (Safecharge)',sourceFilter('SafeCharge'),'SafeCharge (all MIDs)'))
   def.push(pspSubset('Nuvei-AE',x=>x.pspName==='SafeCharge'&&safe(x.midAlias).includes('MID-AE'),'SafeCharge-CreditCard-MID-AE'))
   def.push(pspSubset('Nuvei-EU',x=>x.pspName==='SafeCharge'&&safe(x.midAlias).includes('MID-EU'),'SafeCharge-CreditCard-MID-EU'))
-  def.push(...['Network International','Axcess','Axcess-Truevo'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
+  def.push(...['Network International','Axcess','Axcess-Truevo'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,dataQuality:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
   def.push(pspSubset('Axcess-Paystrax',sourceFilter('Paystra'),'Paystra'))
   def.push(pspSubset('Payabl',sourceFilter('Innatech'),'Innatech (all countries)'))
   def.push(pspSubset('Payabl-Global',x=>x.pspName==='Innatech'&&!isIndiaCountry(x.country),'Innatech → Payabl (non-India)'))
   def.push(pspSubset('Payabl-India',x=>x.pspName==='Innatech'&&isIndiaCountry(x.country),'Innatech → Payabl (India)'))
   def.push(pspSubset('Paysafe',sourceFilter('Paysafe'),'Paysafe'))
   def.push(pspSubset('Unlimit',sourceFilter('CardPay'),'CardPay → Unlimit'))
-  def.push(...['Zen (Card)','PayMaxis'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
+  def.push(...['Zen (Card)','PayMaxis'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,dataQuality:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
   def.push(pspSubset('PayPal',sourceFilter('PayPal'),'PayPal (all countries)'))
   def.push(pspSubset('PayPal-Global',x=>x.pspName==='PayPal'&&!isIndiaCountry(x.country),'PayPal (non-India)'))
   def.push(pspSubset('Paypal-India',x=>x.pspName==='PayPal'&&isIndiaCountry(x.country),'PayPal (India)'))
   def.push(pspSubset('Trust Payment',sourceFilter('TrustPayments'),'TrustPayments'))
-  def.push(...['Apple Pay via Payabl','Google Pay via Payabl'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
+  def.push(...['Apple Pay via Payabl','Google Pay via Payabl'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,dataQuality:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
 
   const taxonomy={}
-  for(const x of r.filter(x=>x.status==='declined')){const inf=reasonInfo(x.declineReason);if(inf){const k=inf.reason+'||'+inf.type;taxonomy[k]=(taxonomy[k]||0)+1}}
+  for(const x of r.filter(x=>x.status==='declined')){const inf=reasonInfo(x.declineReason, x.declineCode);if(inf){const k=inf.reason+'||'+inf.type;taxonomy[k]=(taxonomy[k]||0)+1}}
   const taxonomyRows=Object.entries(taxonomy).map(([k,count])=>{const [reason,type]=k.split('||');return {reason,type,count}}).sort((a,b)=>b.count-a.count)
 
   return {period,timezone,fileName,rawRows:null,rawObjects:parsed,filterable:true,kpis,pspWise:def,countries:countryRecords,mappingRules:PSP_RULES.map(x=>({source:x[0],dashboard:x[1],scope:x[2],rule:x[3]})),taxonomy:taxonomyRows,methodology:[
@@ -297,7 +273,10 @@ function buildFromObjects(parsed,fileName='Transaction Data',filterConfig=null){
     {metric:'PSP Approval Ratio',definition:'Approved PSP attempts / (Approved + Declined PSP attempts)',note:'PSP calculation does NOT deduplicate merchantOrderId.'},
     {metric:'Revenue',definition:'Sum of approved transaction amounts',note:'Reported by country and PSP.'},
     {metric:'Top Country ranking',definition:'Countries ranked by approved revenue',note:'Full country list is available; no Top-50 limit.'},
-    {metric:'Top Performing PSP',definition:'Highest attempt-based PSP approval ratio in the country',note:'Minimum 20 attempts where available; otherwise best available PSP.'}
+    {metric:'Top Performing PSP',definition:'Highest attempt-based PSP approval ratio in the country',note:'Minimum 20 attempts where available; otherwise best available PSP.'},
+    {metric:'Decline Reason',definition:'Individual declined attempt',note:'Country and PSP top reasons are counted from declined attempts, not the first decline attached to a unique merchantOrderId. This avoids retry-order bias.'},
+    {metric:'Country Hard / Soft %',definition:'Terminal unique orders',note:'Country hard/soft percentages remain aligned with the cascaded unique-order methodology; top decline reason is attempt-level.'},
+    {metric:'Decline Classification',definition:'Reason semantics first, decline code second',note:'Specific AVS, 3DS, CVV, fraud/risk, validation, system/gateway, issuer and card-restriction patterns are evaluated before generic code fallbacks.'}
   ]}
 }
 
@@ -464,7 +443,7 @@ function App(){
    if(baseRows){
      for(const x of baseRows){
        if(x.status!=='declined')continue
-       const inf=reasonInfo(x.declineReason)
+       const inf=reasonInfo(x.declineReason, x.declineCode)
        if(!inf)continue
        const key=inf.reason+'||'+inf.type
        counts[key]=(counts[key]||0)+1
@@ -477,6 +456,21 @@ function App(){
    if(declineQuery)a=a.filter(x=>x.reason.toLowerCase().includes(declineQuery.toLowerCase()))
    return a.sort((a,b)=>b.count-a.count)
  },[data,source,filters,declineType,declineQuery])
+ const reasonAuditRows=useMemo(()=>{
+   if(!source?.filterable || !Array.isArray(source.rawObjects))return[]
+   const rows=applyRawFilters(source.rawObjects,filters).filter(x=>x.status==='declined')
+   const m=new Map()
+   for(const x of rows){
+     const inf=reasonInfo(x.declineReason,x.declineCode)
+     const rawReason=x.declineReason||'[blank]'
+     const rawCode=x.declineCode||'[blank]'
+     const key=`${rawReason}||${rawCode}||${inf.reason}||${inf.type}`
+     const cur=m.get(key)||{rawReason,rawCode,reason:inf.reason,type:inf.type,count:0}
+     cur.count++
+     m.set(key,cur)
+   }
+   return [...m.values()].sort((a,b)=>b.count-a.count)
+ },[source,filters])
  const declineScope=useMemo(()=>{
    const parts=[]
    if(countrySelected.length)parts.push(`${countryMode==='exclude'?'Excluding':'Including'} ${countrySelected.join(', ')}`)
@@ -529,9 +523,10 @@ function App(){
      XLSX.utils.book_append_sheet(wb,ws,name)
    }
    addSheet('Executive Summary','FundedNext Approval Ratio Analysis',`Analysis timezone: ${timezone} | ${data.period}`,data.kpis.map(x=>({...x,'Analysis Timezone':timezone})))
-   addSheet('All Countries','All Countries — Revenue Ranked',`Full country list | Revenue highest to lowest | ${timezone}`,data.countries.map(x=>({Rank:x.rank,Country:x.country,'Country Code':x.code,'Approved Revenue (USD)':x.amount,Count:x.count,'Approval Ratio':x.approval,'Approval Ratio without Hard Decline':x.approvalWithoutHard,'Hard Decline %':x.hardPct,'Soft Decline %':x.softPct,'Top Declined Reason':x.topReason,'Top Performing PSP':x.topPsp,'Top PSP Approval':x.topPspApproval,'Top PSP Count':x.topPspCount})))
-   addSheet('PSP Wise','PSP Wise — Attempt Level',`PSP approval does not deduplicate merchantOrderId | ${timezone}`,data.pspWise.map(x=>({PSP:x.psp,'Source Mapping':x.source,Attempts:x.attempts,Approved:x.approved,Declined:x.declined,'Pending / Other':x.pendingOther,'PSP Approval Ratio':x.approval,'Approval Ratio without Hard Decline':x.approvalWithoutHard,'Revenue (USD)':x.revenue,'Hard Declines':x.hard,'Soft Declines':x.soft,Unclassified:x.unclassified,'Hard %':x.hardPct,'Soft %':x.softPct,'Top Declined Reason':x.topReason,'Top Declined Count':x.topCount})))
+   addSheet('All Countries','All Countries — Revenue Ranked',`Full country list | Revenue highest to lowest | ${timezone}`,data.countries.map(x=>({Rank:x.rank,Country:x.country,'Country Code':x.code,'Approved Revenue (USD)':x.amount,Count:x.count,'Approval Ratio':x.approval,'Approval Ratio without Hard Decline':x.approvalWithoutHard,'Hard Decline %':x.hardPct,'Soft Decline %':x.softPct,'Top Declined Reason (attempts)':x.topReason,'Data Quality Count':x.dataQualityCount||0,'Top Performing PSP':x.topPsp,'Top PSP Approval':x.topPspApproval,'Top PSP Count':x.topPspCount})))
+   addSheet('PSP Wise','PSP Wise — Attempt Level',`PSP approval does not deduplicate merchantOrderId | ${timezone}`,data.pspWise.map(x=>({PSP:x.psp,'Source Mapping':x.source,Attempts:x.attempts,Approved:x.approved,Declined:x.declined,'Pending / Other':x.pendingOther,'PSP Approval Ratio':x.approval,'Approval Ratio without Hard Decline':x.approvalWithoutHard,'Revenue (USD)':x.revenue,'Hard Declines':x.hard,'Soft Declines':x.soft,'Data Quality':x.dataQuality||0,Unclassified:x.unclassified,'Hard %':x.hardPct,'Soft %':x.softPct,'Top Declined Reason':x.topReason,'Top Declined Count':x.topCount})))
    addSheet('Hard Soft Declines','Hard & Soft Decline List','Standardized decline taxonomy from the uploaded transaction data',data.taxonomy.map(x=>({'Decline Reason':x.reason,Type:x.type,Count:x.count})))
+   addSheet('Decline Mapping Audit','Decline Mapping Audit','Raw decline reason → standardized category | attempt-level | full filtered list',reasonAuditRows.map(x=>({'Raw Decline Reason':x.rawReason,'Raw Decline Code':x.rawCode,'Standardized Reason':x.reason,Type:x.type,Count:x.count})))
    addSheet('Mapping Rules','PSP Mapping Rules','Dashboard naming and country scope',data.mappingRules.map(x=>({'Source PSP':x.source,'Dashboard PSP':x.dashboard,'Country Scope':x.scope,Rule:x.rule})))
    addSheet('Methodology','Calculation Methodology',`Selected timezone: ${timezone}`,data.methodology.map(x=>({Metric:x.metric,Definition:x.definition,'Rule / Note':x.note})))
    addSheet('Applied Filters','Applied Filters','Filters used for this exported analysis',[
@@ -566,14 +561,15 @@ function App(){
  <MultiSelectFilter title="Country" icon="◉" options={options.countries} selected={countrySelected} setSelected={setCountrySelected} mode={countryMode} setMode={setCountryMode} placeholder="Select Country"/>
  </div>}
  {source?.filterable&&<div className="filter-summary"><span>{activeFilterCount?`${activeFilterCount} filter${activeFilterCount>1?'s':''} active`:'All transaction data'} · {timezone}</span><b>{num(data?.rawObjects?.length||0)} rows loaded</b></div>}
- {['overview','countries','psps','declines','mapping','methodology'].map((id,i)=>{const labels=[['overview','Overview','▦'],['countries','All Countries','◉'],['psps','PSP Performance','◈'],['declines','Hard / Soft Declines','!'],['mapping','PSP Mapping','↔'],['methodology','Methodology','i']][i];return <button key={id} className={`nav-item ${tab===id?'active':''}`} onClick={()=>setTab(id)}><span>{labels[2]}</span>{labels[1]}</button>})}
+ {['overview','countries','psps','declines','reasonAudit','mapping','methodology'].map((id,i)=>{const labels=[['overview','Overview','▦'],['countries','All Countries','◉'],['psps','PSP Performance','◈'],['declines','Hard / Soft Declines','!'],['reasonAudit','Decline Mapping','⌕'],['mapping','PSP Mapping','↔'],['methodology','Methodology','i']][i];return <button key={id} className={`nav-item ${tab===id?'active':''}`} onClick={()=>setTab(id)}><span>{labels[2]}</span>{labels[1]}</button>})}
  <div className="sidebar-note"><b>Calculation rule</b><br/>Country / cascaded KPIs use unique <code>merchantOrderId</code>.<br/><br/>PSP KPIs use individual attempts — <b>no merchantOrderId deduplication</b>.<br/><br/><b>Country ranking</b><br/>Approved revenue, highest to lowest.</div></aside><main className="content">{notice&&<div className="notice">{notice}</div>}
- {tab==='overview'&&<><section className="hero"><div><div className="eyebrow">EXECUTIVE VIEW</div><h1>Approval & Decline Performance</h1><p>Country metrics are cascaded; PSP metrics are attempt-based. Countries are ranked by approved revenue.</p></div><div className="segmented"><button className={approvalMode==='with'?'selected':''} onClick={()=>setApprovalMode('with')}>With Hard Decline</button><button className={approvalMode==='without'?'selected':''} onClick={()=>setApprovalMode('without')}>Without Hard Decline</button></div></section><div className="kpi-grid"><KpiCard label={approvalMode==='with'?'Cascaded Approval Ratio':'Approval Ratio without Hard Decline'} value={pct(currentKpi['Displayed Approval Ratio'])} sub={`${num(currentKpi.Count)} unique merchant orders`} tone="blue"/><KpiCard label="Without India" value={pct(withoutIndia['Displayed Approval Ratio'])} sub="Cascaded country scenario" tone="purple"/><KpiCard label="Revenue" value={money(currentKpi['Revenue (USD)'])} sub="Approved transaction revenue" tone="green"/><KpiCard label="Approved" value={num(currentKpi.Approved)} sub={`${num(currentKpi.Declined)} declined`} tone="amber"/><KpiCard label="Hard Declines" value={num(currentKpi['Hard Declines'])} sub={pct(currentKpi['Hard Decline %'])+' of classified declines'} tone="red"/><KpiCard label="Top Decline Reason" value={currentKpi['Top Declined Reason']} sub="Highest-volume classified reason" tone="slate"/></div><section className="grid-2"><div className="panel"><div className="panel-head"><div><h2>Top Countries by Revenue</h2><p>Top 10 from the full country list</p></div></div>{topCountries.map(c=><RatioBar key={c.code} label={`${c.rank}. ${c.country}`} value={c.amount/(data.countries[0]?.amount||1)} accent="green"/>)} </div><div className="panel"><div className="panel-head"><div><h2>PSP Approval</h2><p>Attempt-based · minimum {pspMin} attempts</p></div></div>{topPsps.map(p=><RatioBar key={p.psp} label={p.psp} value={p.approval} accent={(p.approval??0)>=.75?'green':(p.approval??0)>=.5?'blue':'red'}/>)}</div></section><section className="grid-2"><div className="panel"><div className="panel-head"><div><h2>Decline Mix</h2><p>Terminal declined unique orders</p></div></div><div className="donut-wrap"><div className="donut" style={{'--hard':`${clamp(currentKpi['Hard Decline %'])}%`}}><div><b>{pct(currentKpi['Hard Decline %'])}</b><span>hard</span></div></div><div className="legend"><div><i className="dot hard"></i>Hard declines <b>{num(currentKpi['Hard Declines'])}</b></div><div><i className="dot soft"></i>Soft declines <b>{num(currentKpi['Soft Declines'])}</b></div></div></div></div><div className="panel"><div className="panel-head"><div><h2>Scenario Comparison</h2><p>All countries and without India</p></div></div><RatioBar label="All countries · with hard decline" value={data.kpis[0]['Displayed Approval Ratio']}/><RatioBar label="All countries · without hard decline" value={data.kpis[1]['Displayed Approval Ratio']} accent="green"/><RatioBar label="Without India · with hard decline" value={data.kpis[2]['Displayed Approval Ratio']} accent="purple"/><RatioBar label="Without India · without hard decline" value={data.kpis[3]['Displayed Approval Ratio']} accent="green"/></div></section></>}
- {tab==='countries'&&<section><div className="hero compact"><div><div className="eyebrow">COUNTRY PERFORMANCE</div><h1>All Countries — Revenue Ranked</h1><p>Full country list, ranked by approved revenue. Approval is cascaded using unique merchantOrderId.</p></div></div><div className="toolbar"><div className="segmented"><button className={approvalMode==='with'?'selected':''} onClick={()=>setApprovalMode('with')}>With Hard Decline</button><button className={approvalMode==='without'?'selected':''} onClick={()=>setApprovalMode('without')}>Without Hard Decline</button></div><input className="search" placeholder="Search country, code, PSP or decline reason..." value={countryQuery} onChange={e=>setCountryQuery(e.target.value)}/><select value={countryPsp} onChange={e=>setCountryPsp(e.target.value)}>{pspOptions.map(x=><option key={x}>{x}</option>)}</select></div><div className="panel table-panel"><table><thead><tr><th>Revenue Rank</th><th>Country</th><th>Revenue</th><th>Orders</th><th>Approval</th><th>Without Hard</th><th>Hard %</th><th>Soft %</th><th>Top Decline</th><th>Top PSP</th><th>PSP AR</th><th>PSP Count</th></tr></thead><tbody>{countries.map(c=><tr key={`${c.code}-${c.rank}`}><td><b>{c.rank}</b></td><td><b>{c.country}</b><span className="muted">{c.code}</span></td><td><b>{money(c.amount)}</b></td><td>{num(c.count)}</td><td><span className={`pill ${c.approval>=.8?'good':c.approval>=.6?'mid':'bad'}`}>{pct(approvalMode==='with'?c.approval:c.approvalWithoutHard)}</span></td><td>{pct(c.approvalWithoutHard)}</td><td>{pct(c.hardPct)}</td><td>{pct(c.softPct)}</td><td>{c.topReason}</td><td>{c.topPsp}</td><td>{pct(c.topPspApproval)}</td><td>{num(c.topPspCount)}</td></tr>)}</tbody></table></div></section>}
- {tab==='psps'&&<section><div className="hero compact"><div><div className="eyebrow">PSP PERFORMANCE</div><h1>Attempt-Level PSP Analysis</h1><p>PSP approval ratio does <b>not</b> deduplicate merchantOrderId.</p></div></div><div className="toolbar"><input className="search" placeholder="Search PSP, source mapping or decline reason..." value={pspQuery} onChange={e=>setPspQuery(e.target.value)}/><select value={pspMin} onChange={e=>setPspMin(Number(e.target.value))}><option value="0">All attempts</option><option value="20">20+ attempts</option><option value="100">100+ attempts</option><option value="500">500+ attempts</option></select></div><div className="panel table-panel"><table><thead><tr><th>PSP</th><th>Source Mapping</th><th>Attempts</th><th>Approved</th><th>Declined</th><th>Approval</th><th>Without Hard</th><th>Revenue</th><th>Hard</th><th>Soft</th><th>Unclassified</th><th>Top Reason</th></tr></thead><tbody>{pspRows.map(p=><tr key={p.psp}><td><b>{p.psp}</b></td><td className="muted">{p.source}</td><td>{num(p.attempts)}</td><td>{num(p.approved)}</td><td>{num(p.declined)}</td><td><span className={`pill ${(p.approval??0)>=.75?'good':(p.approval??0)>=.5?'mid':'bad'}`}>{pct(p.approval)}</span></td><td>{pct(p.approvalWithoutHard)}</td><td>{money(p.revenue)}</td><td>{num(p.hard)}</td><td>{num(p.soft)}</td><td>{num(p.unclassified)}</td><td>{p.topReason}</td></tr>)}</tbody></table></div></section>}
- {tab==='declines'&&<section><div className="hero compact"><div><div className="eyebrow">DECLINE TAXONOMY</div><h1>Hard & Soft Declines</h1><p>Standardized list derived from the uploaded transaction decline reasons. <b>Current scope: {declineScope}</b></p></div></div><div className="toolbar"><div className="segmented"><button className={declineType==='All'?'selected':''} onClick={()=>setDeclineType('All')}>All</button><button className={declineType==='Hard'?'selected':''} onClick={()=>setDeclineType('Hard')}>Hard</button><button className={declineType==='Soft'?'selected':''} onClick={()=>setDeclineType('Soft')}>Soft</button></div><input className="search" placeholder="Search decline reason..." value={declineQuery} onChange={e=>setDeclineQuery(e.target.value)}/></div><div className="decline-grid">{['Hard','Soft'].filter(t=>declineType==='All'||declineType===t).map(type=>{const list=declineRows.filter(x=>x.type===type);const total=list.reduce((s,x)=>s+x.count,0);return <div className="panel" key={type}><div className="panel-head"><div><h2>{type} Declines</h2><p>{list.length} reasons · {num(total)} mapped declined attempts</p></div></div>{list.map((x,i)=><div className="decline-row" key={`${type}-${x.reason}-${i}`}><div><b>{x.reason}</b><span>{x.type}</span></div><strong>{num(x.count)}</strong></div>)}</div>})}</div></section>}
+ {tab==='overview'&&<><section className="hero"><div><div className="eyebrow">EXECUTIVE VIEW</div><h1>Approval & Decline Performance</h1><p>Country metrics are cascaded; PSP metrics are attempt-based. Countries are ranked by approved revenue.</p></div><div className="segmented"><button className={approvalMode==='with'?'selected':''} onClick={()=>setApprovalMode('with')}>With Hard Decline</button><button className={approvalMode==='without'?'selected':''} onClick={()=>setApprovalMode('without')}>Without Hard Decline</button></div></section><div className="kpi-grid"><KpiCard label={approvalMode==='with'?'Cascaded Approval Ratio':'Approval Ratio without Hard Decline'} value={pct(currentKpi['Displayed Approval Ratio'])} sub={`${num(currentKpi.Count)} unique merchant orders`} tone="blue"/><KpiCard label="Without India" value={pct(withoutIndia['Displayed Approval Ratio'])} sub="Cascaded country scenario" tone="purple"/><KpiCard label="Revenue" value={money(currentKpi['Revenue (USD)'])} sub="Approved transaction revenue" tone="green"/><KpiCard label="Approved" value={num(currentKpi.Approved)} sub={`${num(currentKpi.Declined)} declined`} tone="amber"/><KpiCard label="Hard Declines" value={num(currentKpi['Hard Declines'])} sub={pct(currentKpi['Hard Decline %'])+' of classified declines'} tone="red"/><KpiCard label="Top Decline Reason" value={currentKpi['Top Declined Reason']} sub="Highest-volume classified decline attempt" tone="slate"/></div><section className="grid-2"><div className="panel"><div className="panel-head"><div><h2>Top Countries by Revenue</h2><p>Top 10 from the full country list</p></div></div>{topCountries.map(c=><RatioBar key={c.code} label={`${c.rank}. ${c.country}`} value={c.amount/(data.countries[0]?.amount||1)} accent="green"/>)} </div><div className="panel"><div className="panel-head"><div><h2>PSP Approval</h2><p>Attempt-based · minimum {pspMin} attempts</p></div></div>{topPsps.map(p=><RatioBar key={p.psp} label={p.psp} value={p.approval} accent={(p.approval??0)>=.75?'green':(p.approval??0)>=.5?'blue':'red'}/>)}</div></section><section className="grid-2"><div className="panel"><div className="panel-head"><div><h2>Decline Mix</h2><p>Terminal declined unique orders</p></div></div><div className="donut-wrap"><div className="donut" style={{'--hard':`${clamp(currentKpi['Hard Decline %'])}%`}}><div><b>{pct(currentKpi['Hard Decline %'])}</b><span>hard</span></div></div><div className="legend"><div><i className="dot hard"></i>Hard declines <b>{num(currentKpi['Hard Declines'])}</b></div><div><i className="dot soft"></i>Soft declines <b>{num(currentKpi['Soft Declines'])}</b></div></div></div></div><div className="panel"><div className="panel-head"><div><h2>Scenario Comparison</h2><p>All countries and without India</p></div></div><RatioBar label="All countries · with hard decline" value={data.kpis[0]['Displayed Approval Ratio']}/><RatioBar label="All countries · without hard decline" value={data.kpis[1]['Displayed Approval Ratio']} accent="green"/><RatioBar label="Without India · with hard decline" value={data.kpis[2]['Displayed Approval Ratio']} accent="purple"/><RatioBar label="Without India · without hard decline" value={data.kpis[3]['Displayed Approval Ratio']} accent="green"/></div></section></>}
+ {tab==='countries'&&<section><div className="hero compact"><div><div className="eyebrow">COUNTRY PERFORMANCE</div><h1>All Countries — Revenue Ranked</h1><p>Full country list, ranked by approved revenue. Approval is cascaded using unique merchantOrderId.</p></div></div><div className="toolbar"><div className="segmented"><button className={approvalMode==='with'?'selected':''} onClick={()=>setApprovalMode('with')}>With Hard Decline</button><button className={approvalMode==='without'?'selected':''} onClick={()=>setApprovalMode('without')}>Without Hard Decline</button></div><input className="search" placeholder="Search country, code, PSP or decline reason..." value={countryQuery} onChange={e=>setCountryQuery(e.target.value)}/><select value={countryPsp} onChange={e=>setCountryPsp(e.target.value)}>{pspOptions.map(x=><option key={x}>{x}</option>)}</select></div><div className="panel table-panel"><table><thead><tr><th>Revenue Rank</th><th>Country</th><th>Revenue</th><th>Orders</th><th>Approval</th><th>Without Hard</th><th>Hard %</th><th>Soft %</th><th>Top Decline (Attempts)</th><th>Top PSP</th><th>PSP AR</th><th>PSP Count</th></tr></thead><tbody>{countries.map(c=><tr key={`${c.code}-${c.rank}`}><td><b>{c.rank}</b></td><td><b>{c.country}</b><span className="muted">{c.code}</span></td><td><b>{money(c.amount)}</b></td><td>{num(c.count)}</td><td><span className={`pill ${c.approval>=.8?'good':c.approval>=.6?'mid':'bad'}`}>{pct(approvalMode==='with'?c.approval:c.approvalWithoutHard)}</span></td><td>{pct(c.approvalWithoutHard)}</td><td>{pct(c.hardPct)}</td><td>{pct(c.softPct)}</td><td>{c.topReason}</td><td>{c.topPsp}</td><td>{pct(c.topPspApproval)}</td><td>{num(c.topPspCount)}</td></tr>)}</tbody></table></div></section>}
+ {tab==='psps'&&<section><div className="hero compact"><div><div className="eyebrow">PSP PERFORMANCE</div><h1>Attempt-Level PSP Analysis</h1><p>PSP approval ratio does <b>not</b> deduplicate merchantOrderId.</p></div></div><div className="toolbar"><input className="search" placeholder="Search PSP, source mapping or decline reason..." value={pspQuery} onChange={e=>setPspQuery(e.target.value)}/><select value={pspMin} onChange={e=>setPspMin(Number(e.target.value))}><option value="0">All attempts</option><option value="20">20+ attempts</option><option value="100">100+ attempts</option><option value="500">500+ attempts</option></select></div><div className="panel table-panel"><table><thead><tr><th>PSP</th><th>Source Mapping</th><th>Attempts</th><th>Approved</th><th>Declined</th><th>Approval</th><th>Without Hard</th><th>Revenue</th><th>Hard</th><th>Soft</th><th>Data Quality</th><th>Unclassified</th><th>Top Reason</th></tr></thead><tbody>{pspRows.map(p=><tr key={p.psp}><td><b>{p.psp}</b></td><td className="muted">{p.source}</td><td>{num(p.attempts)}</td><td>{num(p.approved)}</td><td>{num(p.declined)}</td><td><span className={`pill ${(p.approval??0)>=.75?'good':(p.approval??0)>=.5?'mid':'bad'}`}>{pct(p.approval)}</span></td><td>{pct(p.approvalWithoutHard)}</td><td>{money(p.revenue)}</td><td>{num(p.hard)}</td><td>{num(p.soft)}</td><td>{num(p.dataQuality||0)}</td><td>{num(p.unclassified)}</td><td>{p.topReason}</td></tr>)}</tbody></table></div></section>}
+ {tab==='declines'&&<section><div className="hero compact"><div><div className="eyebrow">DECLINE TAXONOMY</div><h1>Hard & Soft Declines</h1><p>Standardized list derived from the uploaded transaction decline reasons. <b>Current scope: {declineScope}</b></p></div></div><div className="toolbar"><div className="segmented"><button className={declineType==='All'?'selected':''} onClick={()=>setDeclineType('All')}>All</button><button className={declineType==='Hard'?'selected':''} onClick={()=>setDeclineType('Hard')}>Hard</button><button className={declineType==='Soft'?'selected':''} onClick={()=>setDeclineType('Soft')}>Soft</button><button className={declineType==='Data Quality'?'selected':''} onClick={()=>setDeclineType('Data Quality')}>Data Quality</button></div><input className="search" placeholder="Search decline reason..." value={declineQuery} onChange={e=>setDeclineQuery(e.target.value)}/></div><div className="decline-grid">{['Hard','Soft','Data Quality'].filter(t=>declineType==='All'||declineType===t).map(type=>{const list=declineRows.filter(x=>x.type===type);const total=list.reduce((s,x)=>s+x.count,0);return <div className="panel" key={type}><div className="panel-head"><div><h2>{type} Declines</h2><p>{list.length} reasons · {num(total)} mapped declined attempts</p></div></div>{list.map((x,i)=><div className="decline-row" key={`${type}-${x.reason}-${i}`}><div><b>{x.reason}</b><span>{x.type}</span></div><strong>{num(x.count)}</strong></div>)}</div>})}</div></section>}
+ {tab==='reasonAudit'&&<section><div className="hero compact"><div><div className="eyebrow">DECLINE MAPPING AUDIT</div><h1>Raw Reason → Standardized Category</h1><p>Every declined attempt is mapped using the active filters. This is the audit trail behind country and PSP decline reporting.</p></div><button className="secondary-btn" onClick={()=>exportCsv(reasonAuditRows.map(x=>({'Raw Decline Reason':x.rawReason,'Raw Decline Code':x.rawCode,'Standardized Reason':x.reason,Type:x.type,Count:x.count})),'fundednext-decline-mapping-audit.csv')}>Export CSV</button></div><div className="panel table-panel"><table><thead><tr><th>Raw Decline Reason</th><th>Raw Code</th><th>Standardized Reason</th><th>Type</th><th>Count</th></tr></thead><tbody>{reasonAuditRows.slice(0,500).map((x,i)=><tr key={`${x.rawReason}-${x.rawCode}-${i}`}><td>{x.rawReason}</td><td className="muted">{x.rawCode}</td><td><b>{x.reason}</b></td><td><span className={`pill ${x.type==='Hard'?'bad':x.type==='Soft'?'good':'mid'}`}>{x.type}</span></td><td>{num(x.count)}</td></tr>)}</tbody></table></div><div className="panel audit-note"><b>Audit note:</b> showing the top 500 raw reason/code combinations by count. The Excel export contains the full filtered mapping audit.</div></section>}
  {tab==='mapping'&&<section><div className="hero compact"><div><div className="eyebrow">DATA NORMALIZATION</div><h1>PSP Mapping Rules</h1><p>Labels used in the dashboard and Excel export.</p></div></div><div className="panel table-panel"><table><thead><tr><th>Source PSP</th><th>Dashboard PSP</th><th>Country Scope</th><th>Rule</th></tr></thead><tbody>{data.mappingRules.map((m,i)=><tr key={i}><td><b>{m.source}</b></td><td>{m.dashboard}</td><td>{m.scope}</td><td>{m.rule}</td></tr>)}</tbody></table></div></section>}
- {tab==='methodology'&&<section><div className="hero compact"><div><div className="eyebrow">DEFINITIONS</div><h1>Methodology</h1><p>Country/cascaded and PSP calculations intentionally use different transaction keys.</p></div></div><div className="method-grid">{data.methodology.map((m,i)=><div className="panel method-card" key={i}><div className="eyebrow">{m.metric}</div><h3>{m.definition}</h3><p>{m.note}</p></div>)}</div></section>}
+ {tab==='methodology'&&<section><div className="hero compact"><div><div className="eyebrow">DEFINITIONS</div><h1>Methodology</h1><p>Approval ratios and decline-reason analysis intentionally use different transaction keys.</p></div></div><div className="method-grid">{data.methodology.map((m,i)=><div className="panel method-card" key={i}><div className="eyebrow">{m.metric}</div><h3>{m.definition}</h3><p>{m.note}</p></div>)}</div></section>}
  </main></div></div>
 }
 
