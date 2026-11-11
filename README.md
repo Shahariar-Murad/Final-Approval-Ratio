@@ -80,3 +80,9 @@ All dashboard KPIs, revenue, approval ratios, decline analysis, country ranking,
 - Validation and malformed request errors are **Validation / Data Error — Hard**.
 - Declined rows whose reason says `Approved or completed Successfully` are flagged as **Data Quality / Status Inconsistency**, not forced into Hard or Soft.
 - The dashboard includes a **Decline Mapping** audit page and a full Excel `Decline Mapping Audit` sheet.
+
+## Axcess mapping
+- Axcess = Axcess-Truevo + Axcess-Paystrax
+- Source `pspName = Axcess` → dashboard `Axcess-Truevo`
+- Source `pspName = Paystra` → dashboard `Axcess-Paystrax`
+- The combined `Axcess` row includes both source groups.

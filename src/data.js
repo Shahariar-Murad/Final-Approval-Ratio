@@ -134,14 +134,14 @@ export const DEFAULT_DATA = {
     },
     {
       "psp": "Axcess",
-      "source": "No matching source data",
-      "attempts": 0,
-      "approved": 0,
-      "declined": 0,
+      "source": "Axcess = Axcess-Truevo + Axcess-Paystrax",
+      "attempts": 3884,
+      "approved": 1579,
+      "declined": 2305,
       "pendingOther": 0,
-      "approval": null,
+      "approval": 0.4065396498455201,
       "approvalWithoutHard": null,
-      "revenue": 0.0,
+      "revenue": 266958.601,
       "hard": 0,
       "soft": 0,
       "unclassified": 0,
@@ -152,14 +152,14 @@ export const DEFAULT_DATA = {
     },
     {
       "psp": "Axcess-Truevo",
-      "source": "No matching source data",
-      "attempts": 0,
-      "approved": 0,
-      "declined": 0,
+      "source": "Axcess / Axcess-Truevo",
+      "attempts": 858,
+      "approved": 315,
+      "declined": 543,
       "pendingOther": 0,
-      "approval": null,
+      "approval": 0.36713286713286714,
       "approvalWithoutHard": null,
-      "revenue": 0.0,
+      "revenue": 53870.034,
       "hard": 0,
       "soft": 0,
       "unclassified": 0,
@@ -170,14 +170,14 @@ export const DEFAULT_DATA = {
     },
     {
       "psp": "Axcess-Paystrax",
-      "source": "Paystra",
-      "attempts": 4641,
-      "approved": 945,
-      "declined": 3696,
+      "source": "Paystra / Axcess-Paystrax",
+      "attempts": 3026,
+      "approved": 1264,
+      "declined": 1762,
       "pendingOther": 0,
-      "approval": 0.2036199095022624,
-      "approvalWithoutHard": 0.8035714285714286,
-      "revenue": 147834.283,
+      "approval": 0.41771315267680104,
+      "approvalWithoutHard": null,
+      "revenue": 213088.567,
       "hard": 3465,
       "soft": 226,
       "unclassified": 5,
@@ -1215,6 +1215,54 @@ export const DEFAULT_DATA = {
       "dashboard": "Paypal-India",
       "scope": "India only",
       "rule": "Country = IN."
+    },
+    {
+      "source": "SafeCharge",
+      "dashboard": "Nuvei (Safecharge)",
+      "scope": "All countries",
+      "rule": "Overall SafeCharge."
+    },
+    {
+      "source": "SafeCharge",
+      "dashboard": "Nuvei-AE",
+      "scope": "MID-AE",
+      "rule": "SafeCharge-CreditCard-MID-AE."
+    },
+    {
+      "source": "SafeCharge",
+      "dashboard": "Nuvei-EU",
+      "scope": "MID-EU",
+      "rule": "SafeCharge-CreditCard-MID-EU."
+    },
+    {
+      "source": "Axcess",
+      "dashboard": "Axcess",
+      "scope": "All countries",
+      "rule": "Combined Axcess = Axcess-Truevo + Axcess-Paystrax."
+    },
+    {
+      "source": "Axcess",
+      "dashboard": "Axcess-Truevo",
+      "scope": "All countries",
+      "rule": "Source pspName = Axcess; represented as Axcess-Truevo on BridgerPay."
+    },
+    {
+      "source": "Paystra",
+      "dashboard": "Axcess-Paystrax",
+      "scope": "All countries",
+      "rule": "Source pspName = Paystra; represented as Axcess-Paystrax on BridgerPay."
+    },
+    {
+      "source": "TrustPayments",
+      "dashboard": "Trust Payment",
+      "scope": "All countries",
+      "rule": "All TrustPayments transactions are reported under Trust Payment."
+    },
+    {
+      "source": "Paysafe",
+      "dashboard": "Paysafe",
+      "scope": "All countries",
+      "rule": "All Paysafe transactions are reported under Paysafe."
     }
   ],
   "taxonomy": [

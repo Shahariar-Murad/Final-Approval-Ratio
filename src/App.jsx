@@ -20,7 +20,9 @@ const PSP_RULES = [
   ['SafeCharge','Nuvei (Safecharge)','All countries','Overall SafeCharge.'],
   ['SafeCharge','Nuvei-AE','MID-AE','SafeCharge-CreditCard-MID-AE.'],
   ['SafeCharge','Nuvei-EU','MID-EU','SafeCharge-CreditCard-MID-EU.'],
-  ['Paystra','Axcess-Paystrax','All countries','All Paystra transactions are reported under Axcess-Paystrax.'],
+  ['Axcess','Axcess','All countries','Combined Axcess = Axcess-Truevo + Axcess-Paystrax.'],
+  ['Axcess','Axcess-Truevo','All countries','Source pspName = Axcess; represented as Axcess-Truevo on BridgerPay.'],
+  ['Paystra','Axcess-Paystrax','All countries','Source pspName = Paystra; represented as Axcess-Paystrax on BridgerPay.'],
   ['TrustPayments','Trust Payment','All countries','All TrustPayments transactions are reported under Trust Payment.'],
   ['Paysafe','Paysafe','All countries','All Paysafe transactions are reported under Paysafe.'],
 ]
@@ -85,6 +87,7 @@ function mapSpecificPsp(psp,country,midAlias){
     if(mid.includes('MID-EU')) return 'Nuvei-EU'
     return 'Nuvei (Safecharge)'
   }
+  if(p==='Axcess') return 'Axcess-Truevo'
   if(p==='Paystra') return 'Axcess-Paystrax'
   if(p==='TrustPayments') return 'Trust Payment'
   if(p==='Paysafe') return 'Paysafe'
@@ -246,8 +249,10 @@ function buildFromObjects(parsed,fileName='Transaction Data',filterConfig=null){
   def.push(pspSubset('Nuvei (Safecharge)',sourceFilter('SafeCharge'),'SafeCharge (all MIDs)'))
   def.push(pspSubset('Nuvei-AE',x=>x.pspName==='SafeCharge'&&safe(x.midAlias).includes('MID-AE'),'SafeCharge-CreditCard-MID-AE'))
   def.push(pspSubset('Nuvei-EU',x=>x.pspName==='SafeCharge'&&safe(x.midAlias).includes('MID-EU'),'SafeCharge-CreditCard-MID-EU'))
-  def.push(...['Network International','Axcess','Axcess-Truevo'].map(x=>({psp:x,source:'No matching source data',attempts:0,approved:0,declined:0,pendingOther:0,approval:null,approvalWithoutHard:null,revenue:0,hard:0,soft:0,dataQuality:0,unclassified:0,hardPct:null,softPct:null,topReason:'Unclassified',topCount:0})))
-  def.push(pspSubset('Axcess-Paystrax',sourceFilter('Paystra'),'Paystra'))
+  def.push(pspSubset('Axcess',x=>x.pspName==='Axcess'||x.pspName==='Paystra','Axcess = Axcess-Truevo + Axcess-Paystrax'))
+  def.push(pspSubset('Axcess-Truevo',sourceFilter('Axcess'),'Axcess / Axcess-Truevo'))
+  def.push(pspSubset('Axcess-Paystrax',sourceFilter('Paystra'),'Paystra / Axcess-Paystrax'))
+  def.push(pspSubset('Network International',sourceFilter('NetworkInternational'),'NetworkInternational'))
   def.push(pspSubset('Payabl',sourceFilter('Innatech'),'Innatech (all countries)'))
   def.push(pspSubset('Payabl-Global',x=>x.pspName==='Innatech'&&!isIndiaCountry(x.country),'Innatech → Payabl (non-India)'))
   def.push(pspSubset('Payabl-India',x=>x.pspName==='Innatech'&&isIndiaCountry(x.country),'Innatech → Payabl (India)'))
@@ -271,6 +276,7 @@ function buildFromObjects(parsed,fileName='Transaction Data',filterConfig=null){
     {metric:'Approval Ratio',definition:'Approved unique orders / total unique orders',note:'Country/cascaded calculation.'},
     {metric:'Approval Ratio without Hard Decline',definition:'Approved / (Approved + Soft Declines)',note:'Hard terminal declines removed from denominator.'},
     {metric:'PSP Approval Ratio',definition:'Approved PSP attempts / (Approved + Declined PSP attempts)',note:'PSP calculation does NOT deduplicate merchantOrderId.'},
+    {metric:'Axcess mapping',definition:'Axcess = Axcess-Truevo + Axcess-Paystrax',note:'Source pspName Axcess is reported as Axcess-Truevo; source pspName Paystra is reported as Axcess-Paystrax. The combined Axcess row includes both.'},
     {metric:'Revenue',definition:'Sum of approved transaction amounts',note:'Reported by country and PSP.'},
     {metric:'Top Country ranking',definition:'Countries ranked by approved revenue',note:'Full country list is available; no Top-50 limit.'},
     {metric:'Top Performing PSP',definition:'Highest attempt-based PSP approval ratio in the country',note:'Minimum 20 attempts where available; otherwise best available PSP.'},
